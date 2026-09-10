@@ -232,7 +232,12 @@ class GrokLLM(OpenAILLM):
 
 
 def get_llm(provider: str = "gemini", model: str | None = None) -> BaseLLM:
-    prov = provider.lower()
+    if ":" in provider:
+        prov, spec_model = provider.split(":", 1)
+        model = spec_model or model
+    else:
+        prov = provider
+    prov = prov.lower()
     if prov == "gemini":
         return GeminiLLM(model_name=model or os.environ.get("READER_MODEL", "gemini-3.8-flash"))
     elif prov == "openai":

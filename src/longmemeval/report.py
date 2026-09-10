@@ -304,6 +304,25 @@ def generate_report_for_run(
         except Exception:
             pass
 
+    # If source_hypotheses is present, inherit retrieval and ingestion parameters from source run
+    src_hypo = run_meta.get("parameters", {}).get("source_hypotheses")
+    if src_hypo:
+        try:
+            src_results_path = Path(src_hypo).parent / "results.json"
+            if src_results_path.exists():
+                src_data = json.loads(src_results_path.read_text(encoding="utf-8"))
+                src_run = src_data.get("run", {})
+                src_params = src_run.get("parameters", {})
+                run_params = run_meta.setdefault("parameters", {})
+                if "retrieval" in src_params and "retrieval" not in run_params:
+                    run_params["retrieval"] = src_params["retrieval"]
+                if "ingestion" in src_params and "ingestion" not in run_params:
+                    run_params["ingestion"] = src_params["ingestion"]
+                if "provider" in src_run and "provider" not in run_meta:
+                    run_meta["provider"] = src_run["provider"]
+        except Exception:
+            pass
+
     if "pipeline" not in run_meta:
         first_hypo = next(iter(hypos.values())) if isinstance(hypos, dict) else (hypos[0] if hypos else None)
         if first_hypo:
@@ -1351,6 +1370,18 @@ const ms = v => v == null ? '—' : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `$
 const fmtNum = v => v == null ? '—' : Number(v).toLocaleString();
 const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 
+const isAdaptive = (
+  retParams.category_adaptive !== false &&
+  (String(run.provider || ingest.provider || '').toLowerCase().includes('caura') ||
+   retParams.category_adaptive === true ||
+   String(retParams.strategy || '').toLowerCase().includes('adaptive') ||
+   String(run.name || '').toLowerCase().includes('adaptive') ||
+   run.top_k_adaptive === true)
+);
+
+const baseK = run.top_k || retParams.top_k || 20;
+const topKDisplay = isAdaptive ? `Adaptive (15–60, base ${baseK})` : fmtNum(baseK);
+
 // Populate chips
 document.querySelector('#run-chips').innerHTML = `
   <span class="chip">Run: <strong>${h(run.name || 'default')}</strong></span>
@@ -1358,7 +1389,7 @@ document.querySelector('#run-chips').innerHTML = `
   ${(run.pipeline || genParams.pipeline || params.pipeline) ? `<span class="chip">Pipeline: <strong style="color:#a78bfa;">${h(run.pipeline || genParams.pipeline || params.pipeline)}</strong></span>` : ''}
   <span class="chip">Reader: <strong>${h(run.reader || genParams.reader || 'default')}</strong></span>
   <span class="chip">Judge: <strong>${h(run.judge || genParams.judge || 'default')}</strong></span>
-  <span class="chip">Top-k: <strong>${h(run.top_k || retParams.top_k || 'adaptive')}</strong></span>
+  <span class="chip">Top-k: <strong>${h(topKDisplay)}</strong></span>
 `;
 
 // Populate execution parameters
@@ -1384,8 +1415,8 @@ const paramGroups = [
   {
     title: 'Retrieval Strategy',
     items: [
-      ['Top-k Setting', fmtNum(run.top_k || retParams.top_k || 20)],
-      ['Search Strategy', retParams.strategy || (retParams.category_adaptive ? 'Category-Adaptive' : 'Semantic search')],
+      ['Top-k Setting', topKDisplay],
+      ['Search Strategy', retParams.strategy || (isAdaptive ? 'Adaptive profile / semantic search' : 'Semantic search')],
       ['Context Ordering', retParams.context_ordering || 'Chronological (oldest to newest)'],
       ['Avg Context Tokens', summary.retrieval ? `~${fmtNum(Math.round(summary.retrieval.avg_context_chars / 4))} est. tokens` : '—']
     ]

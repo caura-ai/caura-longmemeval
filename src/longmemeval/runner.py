@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -265,6 +267,7 @@ class BenchmarkRunner:
         pipeline: str = "direct",
         exclude_ids: set[str] | list[str] | None = None,
         seed: int | None = None,
+        concurrency: int = 1,
     ) -> dict[str, Any]:
         items = self.dataset.load_items(
             category=category,
@@ -305,16 +308,15 @@ class BenchmarkRunner:
             if existing_qids:
                 console.print(f"[yellow]Resuming run: found {len(existing_qids)} already completed questions in {hypotheses_path}[/yellow]")
 
-        for idx, item in enumerate(items, 1):
-            if item.question_id in existing_qids:
-                console.print(f"[dim][{idx}/{len(items)}] Skipping {item.question_id} ({item.question_type}) - already completed[/dim]")
-                continue
+        items_to_process = [it for it in items if it.question_id not in existing_qids]
+        file_lock = threading.Lock()
+        completed_count = len(existing_qids)
+        total_items = len(items)
 
-            console.print(f"[bold blue][{idx}/{len(items)}][/bold blue] Question {item.question_id} ({item.question_type})")
-
-            # 1. Ingest unit documents (haystack sessions)
-            docs = self.dataset.item_to_documents(item)
+        def process_item(item: LongMemEvalItem) -> HypothesisEntry:
+            nonlocal completed_count
             unit_id = item.question_id
+            docs = self.dataset.item_to_documents(item)
 
             if not skip_ingest:
                 t0_ingest = time.perf_counter()
@@ -333,7 +335,6 @@ class BenchmarkRunner:
                 question_type=item.question_type,
             )
             retrieve_ms = (time.perf_counter() - t0_ret) * 1000
-            console.print(f"  [dim]Retrieved {len(facts)} memories in {retrieve_ms:.0f}ms[/dim]")
 
             # 3. Generate answer
             context_text = format_facts(facts)
@@ -344,7 +345,6 @@ class BenchmarkRunner:
                 question_date=item.question_date,
                 pipeline=pipeline,
             )
-            console.print(f"  [dim]Generated answer ({pipeline}) in {gen_ms:.0f}ms[/dim]")
 
             entry = HypothesisEntry(
                 question_id=item.question_id,
@@ -358,15 +358,28 @@ class BenchmarkRunner:
                 pipeline=pipeline,
                 pipeline_trace=pipeline_trace,
             )
-            hypotheses.append(entry)
 
-            # Save incrementally
-            with open(hypotheses_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry.model_dump(), ensure_ascii=False) + "\n")
+            with file_lock:
+                completed_count += 1
+                hypotheses.append(entry)
+                with open(hypotheses_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry.model_dump(), ensure_ascii=False) + "\n")
+                console.print(f"  [{completed_count}/{total_items}] #{item.question_id} ({item.question_type}) in {retrieve_ms:.0f}ms ret / {gen_ms:.0f}ms gen")
+
+            return entry
+
+        if concurrency > 1 and len(items_to_process) > 1:
+            console.print(f"[bold cyan]Processing {len(items_to_process)} questions with concurrency={concurrency}...[/bold cyan]")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+                list(pool.map(process_item, items_to_process))
+        else:
+            for item in items_to_process:
+                console.print(f"[bold blue]Question {item.question_id} ({item.question_type})[/bold blue]")
+                process_item(item)
 
         # 4. Evaluate using official judge prompts
         console.print("\n[bold]Evaluating hypotheses with judge LLM...[/bold]")
-        summary = self.evaluator.evaluate(hypotheses, items, out_eval_path=eval_path)
+        summary = self.evaluator.evaluate(hypotheses, items, out_eval_path=eval_path, concurrency=max(1, concurrency))
 
         finished_at = datetime.now(timezone.utc)
         duration_s = (finished_at - started_at).total_seconds()
