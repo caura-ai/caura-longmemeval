@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import httpx
 from rich.console import Console
 
+from ..dataset import parse_timestamp
 from ..models import MemoryDocument, RetrievedFact
 from .base import BaseMemoryProvider
 
@@ -180,6 +181,13 @@ class CauraMemoryProvider(BaseMemoryProvider):
         self.commit_batch = max(1, int(_env("COMMIT_BATCH", str(commit_batch))))
         self.ingest_workers = max(1, int(_env("INGEST_WORKERS", str(ingest_workers))))
         self.settle_time = float(_env("SETTLE_TIME", "5.0"))
+        # Send the question's date as ``valid_at``. The runner has passed
+        # ``query_date`` into retrieve() all along and this provider dropped it,
+        # so temporal-reasoning questions were answered against today's date.
+        # Default ON; CAURA_VALID_AT=0 reproduces earlier runs. Pair with
+        # ``search.default_profile.freshness_reference=1`` on the tenant for the
+        # freshness half (see the memory_bench adapter's docstring).
+        self.send_valid_at = _env("VALID_AT", "1").lower() in ("1", "true", "yes")
 
         self._client: httpx.Client | None = None
         self._lock = threading.Lock()
@@ -373,7 +381,9 @@ class CauraMemoryProvider(BaseMemoryProvider):
             time.sleep(self.settle_time)
         return stored
 
-    def _search_once(self, query: str, agent_id: str, top_k: int | None = None) -> list[dict]:
+    def _search_once(
+        self, query: str, agent_id: str, top_k: int | None = None, valid_at: str | None = None
+    ) -> list[dict]:
         limit = min(top_k or self.top_k, MAX_SEARCH_TOP_K)
         body = {
             "tenant_id": self.tenant_id,
@@ -381,6 +391,8 @@ class CauraMemoryProvider(BaseMemoryProvider):
             "top_k": limit,
             "filter_agent_id": agent_id,
         }
+        if valid_at:
+            body["valid_at"] = valid_at
         resp = self._request("POST", "/search", json=body)
         if resp.status_code == 422 and limit > 20:
             # Fallback if live environment ceiling has not taken effect
@@ -423,13 +435,22 @@ class CauraMemoryProvider(BaseMemoryProvider):
             if all_words and all_words != content_words:
                 queries.append(" ".join(all_words[:30]))
 
+        # LongMemEval's question_date is "2023/05/20 (Sat) 02:21"-shaped; the
+        # dataset module already knows how to read it. Unparseable → no valid_at.
+        valid_at: str | None = None
+        if self.send_valid_at and query_date:
+            parsed = parse_timestamp(query_date)
+            valid_at = parsed.isoformat() if parsed else None
+
         if len(queries) == 1:
-            raw_items = self._search_once(queries[0], agent_id, top_k=target_top_k)
+            raw_items = self._search_once(queries[0], agent_id, top_k=target_top_k, valid_at=valid_at)
         else:
             fused: dict[str, float] = {}
             best: dict[str, dict] = {}
             for q in queries:
-                for rank, item in enumerate(self._search_once(q, agent_id, top_k=target_top_k)):
+                for rank, item in enumerate(
+                    self._search_once(q, agent_id, top_k=target_top_k, valid_at=valid_at)
+                ):
                     mid = str(item.get("id"))
                     fused[mid] = fused.get(mid, 0.0) + 1.0 / (RRF_K + rank + 1)
                     best.setdefault(mid, item)
