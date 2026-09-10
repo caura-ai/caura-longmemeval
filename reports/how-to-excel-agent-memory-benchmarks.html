@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Caura engineering playbook for LoCoMo, LongMemEval, AMB, and BEAM agent-memory benchmarks.">
+  <title>How to Excel on Agent Memory Benchmarks · Caura</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d10;
+      --surface: #11151a;
+      --surface-raised: #171c22;
+      --surface-soft: #20262d;
+      --text: #eef2f5;
+      --muted: #a6b0ba;
+      --faint: #77838f;
+      --line: #2a323b;
+      --line-strong: #3a4550;
+      --green: #67d391;
+      --green-soft: rgba(103, 211, 145, 0.12);
+      --amber: #f2bd5b;
+      --amber-soft: rgba(242, 189, 91, 0.12);
+      --blue: #72a7ff;
+      --blue-soft: rgba(114, 167, 255, 0.12);
+      --red: #ff8181;
+      --code: #c5e3ff;
+      --max: 1240px;
+    }
+
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f5f6f7;
+      --surface: #ffffff;
+      --surface-raised: #ffffff;
+      --surface-soft: #eef1f3;
+      --text: #182028;
+      --muted: #56616c;
+      --faint: #79848f;
+      --line: #dce1e5;
+      --line-strong: #c5ccd2;
+      --green: #147a41;
+      --green-soft: rgba(20, 122, 65, 0.09);
+      --amber: #996300;
+      --amber-soft: rgba(153, 99, 0, 0.09);
+      --blue: #1769d2;
+      --blue-soft: rgba(23, 105, 210, 0.09);
+      --red: #bb2d3b;
+      --code: #174f7c;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.72;
+      text-rendering: optimizeLegibility;
+    }
+
+    .progress {
+      position: fixed;
+      z-index: 50;
+      inset: 0 auto auto 0;
+      width: 0;
+      height: 2px;
+      background: var(--green);
+    }
+
+    .topbar {
+      position: sticky;
+      z-index: 40;
+      top: 0;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(16px);
+    }
+
+    .topbar__inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      max-width: var(--max);
+      min-height: 58px;
+      margin: auto;
+      padding: 0 28px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .brand__mark {
+      display: grid;
+      width: 26px;
+      height: 26px;
+      place-items: center;
+      border: 1px solid var(--green);
+      color: var(--green);
+      font-size: 12px;
+      letter-spacing: 0;
+    }
+
+    .topbar__actions { display: flex; align-items: center; gap: 8px; }
+    button {
+      min-height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+    }
+    button:hover { border-color: var(--line-strong); color: var(--text); }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 236px minmax(0, 1fr);
+      gap: 54px;
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 52px 28px 96px;
+    }
+
+    .toc {
+      position: sticky;
+      top: 94px;
+      align-self: start;
+      max-height: calc(100vh - 120px);
+      overflow: auto;
+      padding-right: 8px;
+    }
+
+    .toc__title {
+      margin-bottom: 14px;
+      color: var(--faint);
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .toc a {
+      display: block;
+      margin: 0 0 2px;
+      padding: 6px 10px;
+      border-left: 1px solid var(--line);
+      color: var(--faint);
+      font-size: 12px;
+      line-height: 1.35;
+      text-decoration: none;
+    }
+
+    .toc a[data-level="3"] { padding-left: 22px; }
+    .toc a:hover,
+    .toc a.active {
+      border-left-color: var(--green);
+      color: var(--text);
+      background: var(--green-soft);
+    }
+
+    article { min-width: 0; max-width: 850px; }
+    .hero { margin-bottom: 46px; }
+    .hero__eyebrow {
+      margin-bottom: 18px;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3 { line-height: 1.18; text-wrap: balance; }
+    h1 {
+      max-width: 800px;
+      margin: 0;
+      font-size: clamp(38px, 6vw, 68px);
+      font-weight: 760;
+      letter-spacing: -.045em;
+    }
+    .hero__lede {
+      max-width: 680px;
+      margin: 20px 0 28px;
+      color: var(--muted);
+      font-size: 20px;
+      line-height: 1.5;
+    }
+    .hero__source {
+      margin: 12px 0 0;
+      color: var(--faint);
+      font-size: 11px;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--surface);
+    }
+    .metric {
+      display: flex;
+      min-height: 132px;
+      padding: 19px;
+      flex-direction: column;
+      border-right: 1px solid var(--line);
+    }
+    .metric:last-child { border-right: 0; }
+    .metric__value {
+      color: var(--text);
+      font-size: 30px;
+      font-weight: 750;
+      letter-spacing: -.035em;
+    }
+    .metric--green .metric__value { color: var(--green); }
+    .metric--amber .metric__value { color: var(--amber); }
+    .metric--blue .metric__value { color: var(--blue); }
+    .metric__name { margin-top: auto; color: var(--text); font-size: 12px; font-weight: 700; }
+    .metric__note { color: var(--faint); font-size: 10px; line-height: 1.35; }
+
+    h2 {
+      margin: 70px 0 22px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      font-size: 28px;
+      letter-spacing: -.025em;
+    }
+    .hero + blockquote + h2 { margin-top: 54px; }
+    h3 {
+      margin: 42px 0 12px;
+      color: var(--text);
+      font-size: 20px;
+      letter-spacing: -.015em;
+    }
+
+    p { margin: 0 0 16px; color: var(--muted); }
+    strong { color: var(--text); font-weight: 700; }
+    em { color: var(--text); }
+    ul, ol { margin: 10px 0 22px; padding-left: 25px; color: var(--muted); }
+    li { margin: 6px 0; padding-left: 3px; }
+    li::marker { color: var(--green); }
+    a { color: var(--blue); text-underline-offset: 3px; }
+    a:hover { color: var(--text); }
+
+    code {
+      padding: .14em .38em;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--surface-soft);
+      color: var(--code);
+      font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      font-size: .86em;
+      overflow-wrap: anywhere;
+    }
+
+    blockquote {
+      position: relative;
+      margin: 30px 0 0;
+      padding: 24px 26px 24px 30px;
+      border: 1px solid color-mix(in srgb, var(--green) 34%, var(--line));
+      border-left: 3px solid var(--green);
+      border-radius: 0 9px 9px 0;
+      background: var(--green-soft);
+    }
+    blockquote p { margin: 0; color: var(--text); font-size: 16px; }
+
+    hr { margin: 52px 0; border: 0; border-top: 1px solid var(--line); }
+
+    .footer {
+      max-width: var(--max);
+      margin: auto;
+      padding: 26px 28px 40px;
+      border-top: 1px solid var(--line);
+      color: var(--faint);
+      font-size: 12px;
+    }
+
+    @media (max-width: 940px) {
+      .shell { grid-template-columns: 1fr; padding-top: 34px; }
+      .toc { display: none; }
+      article { margin: auto; }
+      .metric-grid { grid-template-columns: repeat(2, 1fr); }
+      .metric:nth-child(2) { border-right: 0; }
+      .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    }
+
+    @media (max-width: 560px) {
+      .topbar__inner { padding: 0 18px; }
+      .shell { padding: 32px 18px 72px; }
+      .brand__label { display: none; }
+      .metric-grid { grid-template-columns: 1fr; }
+      .metric { min-height: 105px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .metric:last-child { border-bottom: 0; }
+      h1 { font-size: 40px; }
+      h2 { font-size: 25px; }
+    }
+
+    @media print {
+      :root {
+        --bg: #fff;
+        --surface: #fff;
+        --surface-raised: #fff;
+        --surface-soft: #f2f2f2;
+        --text: #111;
+        --muted: #333;
+        --faint: #666;
+        --line: #d5d5d5;
+        --green: #176c3b;
+        --blue: #145caa;
+      }
+      body { font-size: 10.5pt; }
+      .topbar, .toc, .progress { display: none; }
+      .shell { display: block; max-width: none; padding: 0; }
+      article { max-width: none; }
+      .hero { break-after: page; padding-top: 16mm; }
+      h2 { break-before: auto; break-after: avoid; }
+      h3 { break-after: avoid; }
+      li, blockquote, .metric-grid { break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+      .footer { max-width: none; padding: 20px 0 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="topbar__inner">
+      <div class="brand"><span class="brand__mark">C</span><span class="brand__label">Caura · Engineering</span></div>
+      <div class="topbar__actions">
+        <button id="theme" type="button" aria-label="Toggle color theme">Light theme</button>
+        <button id="print" type="button">Print / PDF</button>
+      </div>
+    </div>
+  </header>
+  <div class="shell">
+    <aside class="toc" aria-label="Table of contents">
+      <div class="toc__title">Contents</div>
+      <nav id="toc"></nav>
+    </aside>
+    <article id="report">
+<section class="hero">
+  <div class="hero__eyebrow">Caura engineering · benchmark playbook · 10 September 2026</div>
+  <h1>How to Excel on Agent Memory Benchmarks</h1>
+  <p class="hero__lede">A measured path from benchmark scores to durable memory-system improvements.</p>
+  <div class="metric-grid" role="group" aria-label="Headline benchmark results">
+    <div class="metric metric--green">
+      <span class="metric__value">85.4%</span>
+      <span class="metric__name">AMB · PersonaMem</span>
+      <span class="metric__note">Full 589-question run</span>
+    </div>
+    <div class="metric metric--amber">
+      <span class="metric__value">85.5%</span>
+      <span class="metric__name">LongMemEval</span>
+      <span class="metric__note">Research-optimized · 171/200</span>
+    </div>
+    <div class="metric">
+      <span class="metric__value">82.4%</span>
+      <span class="metric__name">LongMemEval</span>
+      <span class="metric__note">Official-mix projection</span>
+    </div>
+    <div class="metric metric--blue">
+      <span class="metric__value">49.0%</span>
+      <span class="metric__name">BEAM 100K</span>
+      <span class="metric__note">Best cutoff · top 20</span>
+    </div>
+  </div>
+  <p class="hero__source">Source: internal benchmark artifacts · trials completed 6–10 September 2026 · protocols differ by benchmark</p>
+</section>
+<blockquote>
+<p><strong>One week of progress:</strong> Over the last seven days, Caura moved from scattered, partly invalid benchmark runs to a credible measurement program across three complementary suites. We established a full 85.4% PersonaMem result, repaired LongMemEval&#39;s missing-history baseline and reached 171/200 (85.5% research-optimized; 82.4% projected on the official mix), and lifted the observed BEAM 100K pass rate from 41.0% to 47.0% in the newer harness while discovering that <code>top_20</code> beats <code>top_200</code> at one fifth of the context. Just as importantly, we exposed the causes behind misleading numbers—contaminated scopes, incomplete ingestion, gold-label adaptation, judge variance, and protocol/model mismatches. The result is more than a higher score: we now know which gains belong to Caura, which belong to the harness, and which server improvements should produce the next durable step-change.</p>
+</blockquote>
+<h2>Executive summary</h2>
+<p>Agent-memory benchmark scores are not a direct measurement of the memory server. They are the output of a pipeline:</p>
+<p><code>dataset → ingestion → storage → retrieval → context packing → answer model → scorer or judge</code></p>
+<p>A change at any layer can move the headline score. The best teams therefore do two things at once:</p>
+<ol>
+<li>improve the memory architecture; and</li>
+<li>make the evaluation protocol explicit, reproducible, and hard to accidentally game.</li>
+</ol>
+<p>Caura&#39;s local evidence is encouraging but uneven:</p>
+<ul>
+<li><strong>AMB / PersonaMem 32k:</strong> 503/589, <strong>85.4%</strong>, using raw 2k-character chunks, <code>top_k=50</code>, Gemini 3.8 Flash as answerer, and exact MCQ-letter scoring. The output records a Gemini 2.5 Flash-Lite judge configuration, but PersonaMem does not invoke that judge. This is our strongest full, non-label-leaking result. The local summary places it 1.0 point above Hybrid Search and 1.2 points below Hindsight, with materially faster ingestion; the raw comparator artifacts are not present in this checkout, so those cross-provider deltas should be treated as reported rather than independently reverified here.</li>
+<li><strong>LongMemEval:</strong> corrected 171/200, <strong>85.5%</strong>, using Gemini 3.8 Flash and Gemini 3.5 Flash-Lite. Because the harness directly uses the benchmark&#39;s <code>question_type</code> label to choose retrieval settings, this is a research-optimized result, not a fair production-style headline. Reweighting its category rates to the official 500-question mix projects roughly <strong>82.4%</strong>.</li>
+<li><strong>BEAM 100K:</strong> <strong>47.0% pass rate</strong> and <strong>0.450 average nugget score</strong> at <code>top_200</code>; <code>top_20</code> was better at <strong>49.0% / 0.492</strong> while using one fifth of the answer context. Summarization remained 0%, and event ordering 5%, exposing architectural gaps that larger <code>top_k</code> does not solve.</li>
+<li><strong>LoCoMo:</strong> the repository still publishes <strong>77.6%</strong> from April 2026, but does not contain the end-to-end raw output needed to reproduce that number. Treat it as a legacy directional result, not the current baseline.</li>
+</ul>
+<p>The highest-value work is:</p>
+<ol>
+<li>freeze comparable and research-optimized protocols as separate tracks;</li>
+<li>make <code>question_date → valid_at → temporal scoring</code> correct end to end;</li>
+<li>add coverage-aware retrieval for aggregation, summarization, and event ordering;</li>
+<li>maintain explicit current and historical preference/constraint state;</li>
+<li>use multiple memory granularities: raw evidence, atomic facts, session summaries, and longitudinal state;</li>
+<li>measure retrieval, reader, and judge quality separately.</li>
+</ol>
+<h2>1. What each benchmark measures</h2>
+<h3>LoCoMo</h3>
+<p>LoCoMo contains ten long, multi-session conversations, averaging roughly 600 utterances and 16K tokens, across up to 32 sessions. It includes question answering, event summarization, and multimodal dialogue generation. The ACL evaluation release is a ten-conversation subset of an earlier 50-conversation release, so dataset version must be stated.</p>
+<p>Its QA categories are:</p>
+<ul>
+<li>category 1: multi-hop;</li>
+<li>category 2: temporal;</li>
+<li>category 3: open-domain or commonsense;</li>
+<li>category 4: single-hop;</li>
+<li>category 5: adversarial or unanswerable.</li>
+</ul>
+<p>The original paper reports answer F1. Most modern vendor reports instead use a binary LLM &quot;J-score&quot; and exclude category 5, usually evaluating 1,540 questions from categories 1–4. Those numbers are not directly comparable to the original paper&#39;s F1 or to runs using a different judge prompt.</p>
+<p>LoCoMo is now small enough for strong long-context models to read almost directly. It remains useful for preference evolution, temporal QA, and retrieval diagnostics, but is weak evidence for production-scale memory unless token cost and latency are reported beside accuracy.</p>
+<p>Primary sources: <a href="https://github.com/snap-research/locomo">official repository</a> and <a href="https://snap-research.github.io/locomo/">ACL 2024 project page</a>.</p>
+<h3>LongMemEval</h3>
+<p>LongMemEval contains 500 evaluation instances across six types:</p>
+<ul>
+<li>single-session user facts;</li>
+<li>single-session assistant facts;</li>
+<li>single-session preference;</li>
+<li>temporal reasoning;</li>
+<li>knowledge update;</li>
+<li>multi-session reasoning.</li>
+</ul>
+<p>Question IDs ending in <code>_abs</code> are abstention cases. Each item includes a <code>question_date</code>, timestamped haystack sessions, and evidence annotations. LongMemEval_S averages about 115K tokens and roughly 40 history sessions; LongMemEval_M is much larger, at roughly 500 sessions per item.</p>
+<p>The official evaluation uses a task-specific LLM judge. The reference implementation uses GPT-4o for judging and explicitly allows leniency for temporal off-by-one errors and some knowledge-update responses. Reader method also matters: the authors recommend a &quot;chain of note&quot; style that extracts useful facts before reasoning.</p>
+<p>LongMemEval is a joint test of:</p>
+<ul>
+<li>whether the right evidence is stored;</li>
+<li>whether it can be retrieved;</li>
+<li>whether dates survive ingestion;</li>
+<li>whether multiple sessions are combined correctly; and</li>
+<li>whether the reader can reason over a large, noisy context.</li>
+</ul>
+<p>Primary sources: <a href="https://github.com/xiaowu0162/LongMemEval">official repository</a> and <a href="https://proceedings.iclr.cc/paper_files/paper/2025/file/d813d324dbf0598bbdc9c8e79740ed01-Paper-Conference.pdf">ICLR 2025 paper</a>.</p>
+<h3>AMB</h3>
+<p>AMB is an evaluation harness and leaderboard, not one dataset. It runs a common sequence—ingest, retrieve, answer, judge—over datasets including PersonaMem, LoCoMo, LongMemEval, BEAM, and coding or research tasks.</p>
+<p>Our main AMB work uses PersonaMem 32k:</p>
+<ul>
+<li>37 personas;</li>
+<li>195 documents;</li>
+<li>589 multiple-choice queries;</li>
+<li>seven question types covering fact recall, preference evolution, reasons for updates, generalization, recommendations, and new suggestions.</li>
+</ul>
+<p>AMB&#39;s main contribution is protocol transparency: outputs record the answer and judge models, context, timing, and per-query decisions. It also supports oracle mode, which is essential for separating retrieval failures from answer-model failures.</p>
+<p>For PersonaMem specifically, scoring is deterministic option-letter equality rather than an LLM judge. Its retrieval query also excludes the MCQ options while the answerer sees the full question. This avoids using answer choices as lexical retrieval hints and should remain frozen in comparisons.</p>
+<p>Primary sources: <a href="https://github.com/vectorize-io/agent-memory-benchmark">official repository</a>, <a href="https://agentmemorybenchmark.ai/">leaderboard</a>, and <a href="https://github.com/bowen-upenn/PersonaMem">PersonaMem</a>.</p>
+<h3>BEAM</h3>
+<p>BEAM targets scale and breadth:</p>
+<ul>
+<li>100 coherent conversations;</li>
+<li>2,000 human-validated questions;</li>
+<li>128K, 500K, 1M, and 10M-token settings; AMB and Mem0 commonly label the smallest split &quot;100K&quot;;</li>
+<li>ten memory abilities.</li>
+</ul>
+<p>The abilities are abstention, contradiction resolution, event ordering, information extraction, instruction following, knowledge update, multi-session reasoning, preference following, summarization, and temporal reasoning.</p>
+<p>BEAM judges fine-grained rubric nuggets on a 0, 0.5, or 1 scale. Event ordering also uses Kendall&#39;s tau-b. A harness may report both:</p>
+<ul>
+<li><strong>average nugget score</strong>, and</li>
+<li><strong>pass rate</strong>, where a question passes when its average nugget score is at least 0.5.</li>
+</ul>
+<p>These must not be conflated. For example, Mem0 reports BEAM 1M at <code>top_200</code> as 70.1% pass rate and 0.641 average score. A headline of &quot;64.1&quot; refers to the score expressed as a percentage, not the pass rate.</p>
+<p>We have two local BEAM paths. The dedicated <code>yanki-beam</code> harness evaluates several retrieval cutoffs and can calculate event-ordering tau. The AMB BEAM adapter uses a different judge/scoring path and a single retrieval pass. It deliberately applies nugget compliance to event ordering for Mem0 head-to-head parity instead of the paper&#39;s Kendall tau-b metric. Results from the two paths should not be merged.</p>
+<p>Version also matters: the official repository&#39;s 31 August 2026 revision records an evaluation-scoring bug fix. Pin the dataset and evaluator commit for every BEAM claim.</p>
+<p>Primary sources: <a href="https://github.com/mohammadtavakoli78/BEAM">official repository</a> and <a href="https://arxiv.org/abs/2510.27246">ICLR 2026 paper</a>.</p>
+<h2>2. The benchmark, harness, and Caura are different systems</h2>
+<h3>Benchmark layer</h3>
+<p>The benchmark controls:</p>
+<ul>
+<li>dataset version and ground truth;</li>
+<li>category definitions and category mix;</li>
+<li>full, sampled, or oracle evaluation;</li>
+<li>answer and scoring task;</li>
+<li>whether adversarial or abstention questions count.</li>
+</ul>
+<p>Changing this layer usually invalidates comparison.</p>
+<p>Use an ingestion allowlist, not a denylist. Only conversational content and production-available metadata may enter memory. LongMemEval&#39;s <code>has_answer</code> and <code>answer_session_ids</code>, LoCoMo QA answers/evidence, and BEAM rubrics are gold data and must remain evaluator-side.</p>
+<h3>Harness layer</h3>
+<p>The harness controls:</p>
+<ul>
+<li>how conversations become documents or memories;</li>
+<li>chunk size and overlap;</li>
+<li>whether speaker, session, and date tags are preserved;</li>
+<li>query rewriting and repeated searches;</li>
+<li><code>top_k</code>, candidate merging, and context truncation;</li>
+<li>sort order;</li>
+<li>answer prompt and answer model;</li>
+<li>judge prompt, judge model, and parse-failure behavior;</li>
+<li>retries, resumption, caching, and handling of failures.</li>
+</ul>
+<p>The harness can improve the score without improving the memory server. It can also suppress a good server with poor packing or a weak reader.</p>
+<h3>Caura server layer</h3>
+<p>The server controls:</p>
+<ul>
+<li>enrichment and atomic fact extraction;</li>
+<li>embeddings, lexical search, entities, and graph expansion;</li>
+<li>temporal validity and contradiction state;</li>
+<li>deduplication and supersession;</li>
+<li>candidate generation, scoring, and reranking;</li>
+<li>identity and fleet scoping;</li>
+<li>latency, rate limits, diagnostics, and native grounded recall.</li>
+</ul>
+<p>The server should receive only information available in production. Passing a benchmark&#39;s gold category label directly to retrieval is not production-realistic.</p>
+<h2>3. Parameters that materially affect results</h2>
+<h3>Dataset and sampling</h3>
+<p>Always pin:</p>
+<ul>
+<li>dataset URL, version, and content hash;</li>
+<li>split and scale;</li>
+<li>exact question IDs;</li>
+<li>category inclusion and weighting;</li>
+<li>random seed and ordering;</li>
+<li>whether the run is full, sampled, balanced, or oracle.</li>
+</ul>
+<p>A category-balanced sample can overstate or understate the official weighted score. Our LongMemEval 85.5% becomes about 82.4% when projected onto the official category mix.</p>
+<h3>Ingestion granularity</h3>
+<p>Important settings include:</p>
+<ul>
+<li>turn, session, document, or fixed-size chunk;</li>
+<li>characters versus tokens;</li>
+<li>overlap and boundary rules;</li>
+<li>raw bulk storage versus LLM extraction;</li>
+<li>extraction model, prompt, and output limit;</li>
+<li>fact salience threshold;</li>
+<li>speaker, session, source, and timestamp metadata;</li>
+<li>deduplication and overwrite/supersession policy.</li>
+</ul>
+<p>Our AMB result demonstrates the interaction:</p>
+<ul>
+<li>8k raw chunks at <code>top_k=20</code>: 82.9%;</li>
+<li>2k raw chunks at <code>top_k=20</code>: not enough coverage;</li>
+<li>2k raw chunks at <code>top_k=50</code>: 85.4%;</li>
+<li>extracted facts at <code>top_k=50</code>: 71.6%, but only 2.3K context tokens.</li>
+</ul>
+<p>There is no globally best chunk size. Smaller chunks improve selectivity only if <code>top_k</code> grows enough to preserve coverage.</p>
+<h3>Answer or reader model</h3>
+<p>Pin provider, exact model version, temperature, maximum output, system prompt, and reasoning mode.</p>
+<p>Reader strength can move results by several points on identical memory context. In our 50-question AMB model screen:</p>
+<ul>
+<li>Gemini 3.8 Flash: 84%;</li>
+<li>Claude Sonnet 4.6: 84%;</li>
+<li>Grok 4.3: 78%;</li>
+<li>Gemini 3.1 Pro Preview: 76%.</li>
+</ul>
+<p>The larger or more expensive model was not automatically better. The answer format and task fit matter.</p>
+<p>In LongMemEval, six analyzed adaptive-v4 failures already contained every gold session in the reader context. Those were reasoning and context-use failures, not evidence-retrieval failures.</p>
+<h3>Judge model</h3>
+<p>Pin judge provider, exact model, prompt, temperature, response schema, retry policy, and parse-failure behavior.</p>
+<p>Rejudging the same 54 LongMemEval answers produced:</p>
+<ul>
+<li>Gemini 3.5 Flash-Lite: 47/54, 87.0%;</li>
+<li>Gemini 3.8 Flash: 47/54, 87.0%, with different per-question decisions;</li>
+<li>GPT-4o: 45/54, 83.3%;</li>
+<li>Grok 4.6: 44/54, 81.5%.</li>
+</ul>
+<p>The 5.5-point span changed no stored memory, retrieval, context, or answer. Never select the judge after seeing which one gives the highest score. For development, preserve one canonical judge and use a second judge or human sample to estimate uncertainty.</p>
+<p>PersonaMem is the exception in our AMB work: its score is exact MCQ-letter match, so the configured <code>judge_llm</code> field does not affect the result.</p>
+<h3><code>top_k</code>, candidate pool, and context budget</h3>
+<p><code>top_k</code> is both a recall budget and a noise budget. It interacts with chunk size, reranking, and reader context length.</p>
+<p>Our evidence:</p>
+<ul>
+<li>AMB improved when 2k chunks moved from insufficient coverage to <code>top_k=50</code>.</li>
+<li>AMB&#39;s 2k <code>top_k=65</code> plus altered FTS weighting scored 83.7%, below the 2k <code>top_k=50</code> run at 85.4%.</li>
+<li>BEAM 100K scored 49.0% pass / 0.492 average at <code>top_20</code>, versus 47.0% / 0.450 at <code>top_200</code>.</li>
+<li>BEAM answer context grew from about 23.4K to 120.9K tokens between those cutoffs.</li>
+<li>LongMemEval&#39;s larger contexts often already contained the evidence; more context did not guarantee a correct answer.</li>
+</ul>
+<p>Report both retrieval depth and actual reader prompt tokens. &quot;Top 200&quot; can mean 200 tiny facts or 200 multi-kilobyte chunks.</p>
+<h3>Sorting and packing</h3>
+<p>Common policies are:</p>
+<ul>
+<li>relevance order;</li>
+<li>chronological oldest-to-newest;</li>
+<li>newest-to-oldest;</li>
+<li>relevance-ranked sessions with chronological order inside each session;</li>
+<li>one or more results per source/session before filling remaining slots.</li>
+</ul>
+<p>Global chronological sorting can destroy the ranking signal. Pure relevance order can make temporal reconstruction difficult. A strong default is:</p>
+<ol>
+<li>rank sessions or sources by relevance;</li>
+<li>enforce source/session diversity;</li>
+<li>preserve chronology inside each selected session;</li>
+<li>put dates and status beside every memory;</li>
+<li>cap total tokens, not only item count.</li>
+</ol>
+<p>Our LongMemEval harness currently sorts every fact oldest-to-newest after retrieval. Our BEAM harness does the same. Both should be A/B tested against grouped relevance order under a fixed context budget.</p>
+<h3>Date tagging and temporal reference</h3>
+<p>Date handling needs four distinct fields:</p>
+<ul>
+<li>ingestion time;</li>
+<li>event or valid-start time;</li>
+<li>valid-end time;</li>
+<li>query reference time.</li>
+</ul>
+<p>The answer prompt needs the query date. Search also needs that date as <code>valid_at</code>.</p>
+<p>Our LongMemEval runner passes <code>question_date</code> into the provider, but the Caura provider does not forward it to <code>/search</code>. The server can already accept <code>valid_at</code>, so this is currently lost at the adapter boundary.</p>
+<p>The server&#39;s first-stage freshness calculation also uses wall-clock <code>now()</code> and an anchor based on the greater of <code>created_at</code> and <code>ts_valid_start</code>. When historical benchmark events are ingested today, <code>created_at</code> dominates and makes them all look equally fresh. Temporal windows also use <code>created_at</code>. For historical evaluation—and for imported production archives—freshness should be calculated from:</p>
+<ul>
+<li>reference time: <code>valid_at</code>, falling back to now;</li>
+<li>event time: <code>ts_valid_start</code>, falling back to <code>created_at</code>.</li>
+</ul>
+<p><code>created_at</code> should not override a known event date.</p>
+<h3>Retrieval configuration</h3>
+<p>Pin and disclose:</p>
+<ul>
+<li>embedding model and query instruction;</li>
+<li>dense/lexical weight;</li>
+<li>full-text rank scaling;</li>
+<li>minimum similarity;</li>
+<li>candidate pool size;</li>
+<li>score formula;</li>
+<li>reranker model and rerank pool;</li>
+<li>entity retrieval and graph-hop limits;</li>
+<li>query rewriting and number of searches;</li>
+<li>merge method and RRF constant;</li>
+<li>recency, status, recall-count, and temporal boosts.</li>
+</ul>
+<p>Our AMB 257-question paired sweep found:</p>
+<ul>
+<li>default 8k baseline: 80.9%;</li>
+<li>pure vector (<code>fts_weight=0</code>): 80.5%;</li>
+<li><code>candidate_pool_size=100</code>: 81.3%;</li>
+<li>unified <code>score_formula=1</code>: 82.1%;</li>
+<li><code>fts_weight=0.6</code>: 82.9%;</li>
+<li>three-query fusion with 40 merged slots: 82.9%.</li>
+</ul>
+<p>On the full 589-question Pro run, <code>fts_weight=0.6</code> improved 83.0% to 84.0%. These are promising signals, not proof of a universal production default.</p>
+<h3>Execution and integrity</h3>
+<p>Pin:</p>
+<ul>
+<li>Caura server release or Git SHA;</li>
+<li>tenant search profile and feature flags;</li>
+<li>API/harness commit;</li>
+<li>run ID and agent/fleet naming;</li>
+<li>concurrency and rate limits;</li>
+<li>retry and timeout policy;</li>
+<li>settle time;</li>
+<li>resume behavior;</li>
+<li>cache state;</li>
+<li>failure accounting.</li>
+</ul>
+<p>Failures must count as failures. A resume must not silently reuse another configuration&#39;s hypotheses or memories.</p>
+<p>Our corrected LongMemEval baseline illustrates the risk: a <code>--skip-ingest</code> run was missing five assistant-history stores. Repairing those five with the same reader, judge, and retrieval settings raised the score from 167/200 to 171/200.</p>
+<p>Our AMB work also found a contaminated extract run in which old bulk chunks survived under reused persona scopes. Run-versioned scope IDs and a preflight memory-count check would have prevented it.</p>
+<p>Two current failure paths also need explicit counters: the LongMemEval extract provider catches per-document ingestion exceptions and continues, while AMB marks empty retrieval as incorrect without calling the judge. Both are defensible execution choices, but the report must distinguish ingestion, retrieval, answer, and judge failures.</p>
+<h2>4. What competitors are actually tuning</h2>
+<p>Public evidence mostly shows <strong>harness and system configuration tuning</strong>, not hidden fine-tuning of model weights. The distinction matters.</p>
+<h3>Mem0</h3>
+<p>Mem0&#39;s April 2026 benchmark stack discloses:</p>
+<ul>
+<li>single-pass retrieval;</li>
+<li><code>top_k=200</code>, with top-50 ablations;</li>
+<li>GPT-4o answerer and judge defaults in the open harness;</li>
+<li>hierarchical fact extraction;</li>
+<li>semantic, keyword, and entity retrieval fused into one ranking;</li>
+<li>temporal classification at write time;</li>
+<li>roughly 6.9K answer-context tokens.</li>
+</ul>
+<p>Its headline results are for the managed platform, which includes proprietary optimizations not present in the open-source SDK. Mem0 also publishes LongMemEval extraction-model ablations while keeping the embedder, vector store, answerer, and judge fixed. That is a good example of isolating one stage.</p>
+<p>Mem0&#39;s repository history also explicitly records tuning LoCoMo answerer and judge prompts. Prompt tuning is legitimate when disclosed and frozen before comparisons; it makes old and new result sets different protocols.</p>
+<p>The current prompt rules are materially benchmark-specific: they constrain LoCoMo dates to 2022–2024, add temporal and counting heuristics, and direct the reader not to abstain on the scored category subset. These are disclosed test-distribution adaptations, not evidence that the same default system will generalize unchanged.</p>
+<p>Reproducibility requires the actual artifact and dependency versions. Mem0 states that its managed v3 results include proprietary features unavailable in the OSS SDK, and maintainers have confirmed that the 2025 paper used the SaaS client rather than the OSS <code>Memory</code> implementation. An unresolved July 2026 harness report also alleges that an SDK rename caused nominal top-50/top-200 OSS runs to use the default top-20; affected runs should be audited before reuse.</p>
+<p>Sources: <a href="https://github.com/mem0ai/memory-benchmarks">benchmark repository</a> and <a href="https://mem0.ai/research">research description</a>.</p>
+<h3>Zep / Graphiti</h3>
+<p>Zep&#39;s LongMemEval work combines a temporal knowledge graph with BGE-m3 embeddings and reranking. It reports both GPT-4o-mini and GPT-4o response-generation configurations and uses GPT-4o with LongMemEval&#39;s question-specific evaluation prompts.</p>
+<p>This is benchmark-specific configuration, but it maps to a production capability: entity and relationship history with temporal validity. Direct comparison still requires matching answer and judge models.</p>
+<p>Its published LoCoMo path retrieves up to 20 nodes with reciprocal-rank fusion plus 20 edges with cross-encoder reranking, uses GPT-4o-mini as reader and judge, and excludes adversarial category 5. Zep later swept node/edge budgets and found gains flattening near 20/20. Its corrected official result is 75.14% ±0.17 across ten runs, under that modern reduced-category J-score protocol—not original LoCoMo F1.</p>
+<p>Source: <a href="https://arxiv.org/abs/2501.13956">Zep temporal knowledge graph paper</a>.</p>
+<h3>Hindsight and AMB</h3>
+<p>Hindsight separates retain, recall, and reflect, and stores world facts, experiences, entity summaries, and beliefs. Its paper fixes a GPT-OSS-120B judge at temperature zero while varying the underlying memory/backbone configuration.</p>
+<p>Hindsight also budgets retrieved context by tokens—12,288 for BEAM and 32,768 elsewhere—rather than by memory count. Comparing its budget to another system&#39;s <code>top_k</code> without reporting actual context tokens is not meaningful.</p>
+<p>AMB also exposes RAG, agentic-RAG, native direct-answer, and oracle modes. These are different tasks:</p>
+<ul>
+<li>one-shot RAG measures provider retrieval plus a shared reader;</li>
+<li>agentic-RAG measures iterative search policy plus memory;</li>
+<li>native answer measures the provider&#39;s full stack;</li>
+<li>oracle isolates reader quality.</li>
+</ul>
+<p>A system should only be compared within the same mode.</p>
+<p>Sources: <a href="https://arxiv.org/abs/2512.12818">Hindsight paper</a> and <a href="https://github.com/vectorize-io/agent-memory-benchmark">AMB repository</a>.</p>
+<h3>Letta</h3>
+<p>Letta&#39;s LoCoMo experiment stores conversation sessions as files and lets a GPT-4o-mini agent repeatedly call <code>search_files</code> until it decides to answer. Tool rules require search first, but query choice and search count are agentic. Letta reports 74.0%; the historical post does not pin the judge version, while the current unmaintained repository defaults elsewhere to GPT-4.1.</p>
+<p>That setup can be useful product evidence, but it is not directly comparable to single-call <code>top_k</code> retrieval. It measures the agent&#39;s search policy and tool use as well as memory.</p>
+<p>Sources: <a href="https://github.com/letta-ai/letta-leaderboard/blob/main/leaderboard/locomo/locomo_benchmark.py">LoCoMo implementation</a> and <a href="https://www.letta.com/blog/benchmarking-ai-agent-memory/">Letta&#39;s analysis</a>.</p>
+<h3>LangMem and OpenAI</h3>
+<p>No primary official LangMem or OpenAI submission was found for the four benchmarks. The public LangMem LoCoMo result is Mem0&#39;s two-agent implementation and excludes adversarial questions; label it as such. Mem0&#39;s ChatGPT Memory experiment supplied all generated memories as context, and LongMemEval&#39;s ChatGPT test covered only 97 short-history questions. Neither is a full, selective-retrieval benchmark for the vendor&#39;s production memory.</p>
+<h3>Common comparability adjustments</h3>
+<p>Across published reports, the largest score-moving choices are:</p>
+<ul>
+<li>excluding LoCoMo adversarial questions;</li>
+<li>replacing original token F1 with a lenient LLM J-score;</li>
+<li>using stronger answer models;</li>
+<li>changing judge models or prompts;</li>
+<li>increasing <code>top_k</code> to 90 or 200;</li>
+<li>adding category-specific answer instructions;</li>
+<li>using repeated agentic retrieval instead of one search;</li>
+<li>using managed proprietary features while publishing an open harness;</li>
+<li>selecting a favorable context budget or benchmark split.</li>
+</ul>
+<p>None is automatically improper. The problem is presenting results as directly comparable when the protocol differs.</p>
+<p>Direct use of a gold benchmark label—such as LongMemEval <code>question_type</code>—is a stronger issue. It is label leakage unless that label is also available in the intended product environment. A production query classifier may infer the same intent from query text, but the benchmark label itself should not be passed to retrieval in a comparable run.</p>
+<p>Direct ingestion of answers, evidence-session IDs, <code>has_answer</code>, or grading rubrics is stronger still: it contaminates memory with the target. Add automated schema allowlists and post-ingest scans so these fields cannot reach Caura.</p>
+<h2>5. Lessons from our trials</h2>
+<h3>AMB / PersonaMem</h3>
+<p>Current best:</p>
+<ul>
+<li>output: <code>C:\Projects\caura-ai\yanki-AMB-benchmark\outputs\personamem\caura-bulk-2k-top50\rag\32k.json</code>;</li>
+<li>503/589, 85.4%;</li>
+<li>raw bulk ingest;</li>
+<li>2k-character chunks;</li>
+<li><code>top_k=50</code>;</li>
+<li>16.3K average answer-context tokens;</li>
+<li>Gemini 3.8 Flash answerer;</li>
+<li>exact MCQ-letter scoring; Gemini 2.5 Flash-Lite is recorded as <code>judge_llm</code> but is not invoked for PersonaMem.</li>
+</ul>
+<p>What worked:</p>
+<ul>
+<li>raising the server&#39;s retrieval ceiling to allow a real 2k-chunk candidate set;</li>
+<li>balancing selectivity and coverage at <code>top_k=50</code>;</li>
+<li>using lexical signal rather than pure vector only;</li>
+<li>retaining raw detail for fact and preference-history questions.</li>
+</ul>
+<p>What did not reliably work:</p>
+<ul>
+<li>assuming more context is always better;</li>
+<li>assuming a &quot;Pro&quot; reader is better than Flash;</li>
+<li>relying on extracted facts alone for verbatim and longitudinal details;</li>
+<li>treating the old dedup-loss diagnosis as current—the major August loss was an idempotency bug and is fixed.</li>
+</ul>
+<p>The remaining weak category is <code>suggest_new_ideas</code>, which is strongly answer-model and prompt bound. Server retrieval work should not be credited with solving it.</p>
+<h3>LongMemEval</h3>
+<p>Meaningful local sequence:</p>
+<ul>
+<li>generic pack-v5 run: 41/54, 75.9%;</li>
+<li>non-adaptive <code>top_k=50</code>, <code>fts_weight=0.6</code>, two-query run: 44/54, 81.5%;</li>
+<li>category-adaptive v4: 47/54, 87.0%;</li>
+<li>corrected adaptive 200-question run: 171/200, 85.5%;</li>
+<li>official-mix projection from the 200-question per-type rates: about 82.4%.</li>
+</ul>
+<p>The 200-question category results were:</p>
+<ul>
+<li>single-session user: 32/34, 94.1%;</li>
+<li>single-session assistant: 33/34, 97.1%;</li>
+<li>knowledge update: 31/34, 91.2%;</li>
+<li>preference: 25/30, 83.3%;</li>
+<li>temporal: 26/34, 76.5%;</li>
+<li>multi-session: 24/34, 70.6%.</li>
+</ul>
+<p>Median reader context was roughly 128.8K characters. Retrieval p50/p95 was 3.93/10.03 seconds; generation p50/p95 was 2.54/9.40 seconds.</p>
+<p>Main lesson: the high-scoring categories do not need more retrieval. Multi-session and temporal need better evidence organization and reasoning. All six analyzed v4 failures already contained every annotated evidence session.</p>
+<p>Protocol caveat: category-adaptive <code>top_k=15–60</code> and query count are chosen from the gold <code>question_type</code>. Keep 85.5% as an optimization result. Build a query-only intent classifier before claiming the adaptive policy as production behavior.</p>
+<p>The attempted full run is not a result: <code>caura-full-eval-v1</code> contains 468 hypotheses but no <code>eval_results.json</code>. Do not extrapolate or headline it.</p>
+<h3>BEAM</h3>
+<p>Current 100K development artifact:</p>
+<ul>
+<li>output: <code>C:\Projects\caura-ai\yanki-beam\outputs\caura-100k-harness_72ba6b53\beam_results_20260909_162921.json</code>;</li>
+<li>200 questions, 20 per ability;</li>
+<li>Gemini 3.8 Flash answerer;</li>
+<li>Gemini 3.5 Flash-Lite judge;</li>
+<li>one Caura query;</li>
+<li>top-10/20/50/200 cutoffs.</li>
+</ul>
+<p>At <code>top_200</code>:</p>
+<ul>
+<li>94/200 passed, 47.0%;</li>
+<li>average nugget score 0.450;</li>
+<li>about 120.9K answer-prompt tokens;</li>
+<li>summarization 0/20;</li>
+<li>event ordering 1/20;</li>
+<li>multi-session reasoning 4/20.</li>
+</ul>
+<p>At <code>top_20</code>:</p>
+<ul>
+<li>98/200 passed, 49.0%;</li>
+<li>average nugget score 0.492;</li>
+<li>about 23.4K answer-prompt tokens.</li>
+</ul>
+<p>This result is labeled <code>protocol=comparable</code>, but its metadata uses Gemini rather than the GPT-4o answerer and judge required by the repository&#39;s comparable protocol definition. It is therefore a development run, not a Mem0-comparable run.</p>
+<p>The previous 200-question Caura run scored 41.0% at <code>top_200</code>; the newer harness scored 47.0%. Because harness and context handling changed, this is evidence of protocol sensitivity, not a measured six-point Caura server gain.</p>
+<p>The highest-value BEAM work is not a 1M run yet. First fix protocol metadata, date semantics, session coverage, summarization memory, and event ordering. Then run the first publishable paired Caura/Mem0 1M evaluation with GPT-4o, <code>top_200</code>, the same 100 conversations, and both pass rate and average score.</p>
+<h3>LoCoMo</h3>
+<p>The current Caura repository says:</p>
+<ul>
+<li>77.6% LLM-judge accuracy;</li>
+<li>96.6% token savings versus full context;</li>
+<li>last run 19 April 2026.</li>
+</ul>
+<p>The end-to-end harness output is not bundled. The repository does include two useful retrieval-isolation harnesses:</p>
+<ul>
+<li><code>scripts/benchmark_blend_locomo.py</code> for first-stage lexical/vector blending;</li>
+<li><code>scripts/benchmark_rerank_locomo.py</code> for order-only reranker evaluation on a fixed candidate pool.</li>
+</ul>
+<p>These scripts correctly distinguish recall from ordering and use paired statistics. They exclude category 5 because it has no evidence turn to retrieve. No saved output was found, so reranking or blend claims should be rerun before being used as a current result.</p>
+<h2>6. Recommended Caura engineering roadmap</h2>
+<h3>P0: protocol and temporal correctness</h3>
+<h4>Freeze two evaluation tracks</h4>
+<p>Create:</p>
+<ul>
+<li><strong>Comparable track:</strong> no gold labels, official split, fixed answerer/judge, one declared retrieval mode, failures counted wrong.</li>
+<li><strong>Research track:</strong> adaptive retrieval, alternate readers/judges, query-specific policies, and architecture ablations.</li>
+</ul>
+<p>Every result should include a machine-readable manifest with dataset hash, question IDs, harness commit, server release, tenant settings, ingestion mode, all retrieval parameters, model versions, prompts, token counts, failure counts, and latency percentiles.</p>
+<h4>Forward and honor <code>valid_at</code></h4>
+<p>In the LongMemEval adapter, forward <code>question_date</code> as <code>/search.valid_at</code>.</p>
+<p>In first-stage scoring:</p>
+<ul>
+<li>compute age relative to <code>valid_at</code> when supplied;</li>
+<li>use <code>ts_valid_start</code> as the primary event anchor;</li>
+<li>use <code>created_at</code> only when event time is unavailable;</li>
+<li>apply temporal windows and valid-end currency relative to the same reference.</li>
+</ul>
+<p>Add regression tests with old events ingested today and a historical query date.</p>
+<h4>Harden run isolation</h4>
+<ul>
+<li>include protocol and run hash in every agent/fleet ID;</li>
+<li>preflight expected memory counts before <code>--skip-ingest</code>;</li>
+<li>refuse resume when the manifest differs;</li>
+<li>record all failed ingests and searches;</li>
+<li>prevent duplicate hypotheses by question ID;</li>
+<li>purge and verify scope before a fresh run.</li>
+</ul>
+<h4>Stop sending ignored write hints</h4>
+<p>The adapters send <code>?mode=strong</code> to bulk write, while the bulk API&#39;s meaningful control is item-level <code>write_mode</code>. Set the supported field explicitly or remove the query parameter. The server should reject unknown behavior-changing parameters rather than silently accepting them.</p>
+<h3>P1: memory architecture</h3>
+<h4>Add coverage-aware retrieval intents</h4>
+<p>Detect query intents such as:</p>
+<ul>
+<li>count or total;</li>
+<li>summarize all;</li>
+<li>order events;</li>
+<li>compare old and new;</li>
+<li>current preference;</li>
+<li>historical preference;</li>
+<li>abstention.</li>
+</ul>
+<p>For count, summary, ordering, and multi-session queries, diversify by source/session/date before reranking. Similarity-only top-k tends to return several near-duplicate chunks from one session.</p>
+<p>The classifier must use query text, not benchmark labels. Log its inferred intent for analysis.</p>
+<h4>Maintain multiple granularities</h4>
+<p>Use four complementary representations:</p>
+<ol>
+<li>raw source chunks for verbatim evidence;</li>
+<li>atomic facts for precise retrieval;</li>
+<li>session summaries for coverage;</li>
+<li>longitudinal state or entity summaries for evolution.</li>
+</ol>
+<p>Caura already has atomic-fact fan-out wired into enrichment. The next step is to measure when it runs on bulk benchmark writes, preserve source/session links on child facts, and retrieve across layers without flooding the reader with duplicates.</p>
+<h4>Build preference and constraint state</h4>
+<p>Represent:</p>
+<ul>
+<li>positive preferences;</li>
+<li>dislikes and negative constraints;</li>
+<li>current value;</li>
+<li>prior values;</li>
+<li>reason for change;</li>
+<li>valid time;</li>
+<li>confidence and provenance.</li>
+</ul>
+<p>Retrieve the current state plus the relevant change chain. This directly targets PersonaMem preference evolution, LongMemEval preference and knowledge update, and BEAM preference/instruction/contradiction categories.</p>
+<h4>Add hierarchical summaries</h4>
+<p>BEAM summarization cannot be solved by returning isolated high-similarity chunks. Create bounded session summaries and rolling longitudinal summaries with provenance links. Retrieval should return summaries for broad questions and raw evidence for verification.</p>
+<h4>Make ordering first-class</h4>
+<p>Preserve stable turn and session sequence IDs. Dates alone are insufficient when events share a date or have relative references. Event-ordering responses should be generated from an explicitly ordered evidence set, not inferred from relevance rank.</p>
+<h3>P2: ranking and diagnostics</h3>
+<h4>Run controlled server A/B tests</h4>
+<p>The AMB sweep justifies full paired tests of:</p>
+<ul>
+<li><code>fts_weight=0.6</code>;</li>
+<li>unified <code>score_formula=1</code>;</li>
+<li>larger candidate pools;</li>
+<li>second-stage reranking;</li>
+<li>server-side query rewriting;</li>
+<li>source/session diversity.</li>
+</ul>
+<p>Change one variable at a time, reuse fixed hypotheses only for judge tests, and report confidence intervals or repeated-run variance.</p>
+<h4>Improve diagnostics</h4>
+<p>Return or log:</p>
+<ul>
+<li>server timing by stage;</li>
+<li>inferred retrieval intent;</li>
+<li><code>valid_at</code> and effective temporal anchor;</li>
+<li>candidate counts before and after each filter;</li>
+<li>dense, lexical, temporal, entity, graph, status, and reranker score components;</li>
+<li>number of distinct sources/sessions in the result;</li>
+<li>unknown or empty agent-scope warnings.</li>
+</ul>
+<h4>Evaluate native <code>/recall</code> separately</h4>
+<p>Caura&#39;s <code>/recall</code> already sorts by valid time, adds the current date when <code>valid_at</code> is provided, and performs grounded step-by-step synthesis. Test it in AMB native-answer or agentic mode, not as a silent replacement inside the shared RAG track.</p>
+<h2>7. Experimental plan</h2>
+<h3>Phase 1: one week</h3>
+<ul>
+<li>freeze manifests for all three local harnesses;</li>
+<li>remove benchmark-label access from comparable LongMemEval;</li>
+<li>forward <code>valid_at</code>;</li>
+<li>fix BEAM protocol enforcement so metadata cannot say comparable with the wrong models;</li>
+<li>add run-scope preflight and resume guards;</li>
+<li>rejudge a fixed sample with the canonical judge plus a second judge and human audit.</li>
+</ul>
+<h3>Phase 2: two weeks</h3>
+<ul>
+<li>implement temporal-reference scoring tests and fix;</li>
+<li>add query-only retrieval intent classification;</li>
+<li>add session/source diversity;</li>
+<li>run paired LongMemEval 500 and AMB 589 A/Bs;</li>
+<li>report evidence-session recall beside answer accuracy.</li>
+</ul>
+<h3>Phase 3: two to four weeks</h3>
+<ul>
+<li>add session and longitudinal summaries;</li>
+<li>add explicit preference/constraint state;</li>
+<li>add ordered event evidence;</li>
+<li>run BEAM 100K architecture ablations;</li>
+<li>only then run paired BEAM 1M comparable evaluations.</li>
+</ul>
+<h2>8. Required reporting checklist</h2>
+<p>A publishable result must state:</p>
+<ul>
+<li>benchmark version, split, scale, and question count;</li>
+<li>category exclusions and weighting;</li>
+<li>memory-system and harness commits;</li>
+<li>server release and tenant feature flags;</li>
+<li>ingestion granularity and extraction model;</li>
+<li>embedding, reranking, graph, and lexical settings;</li>
+<li><code>top_k</code>, candidate pool, query count, merge method, and context tokens;</li>
+<li>sort and packing policy;</li>
+<li>date fields and query reference behavior;</li>
+<li>answer model and full prompt version;</li>
+<li>judge or deterministic scorer, full prompt/code version, and parse-failure behavior;</li>
+<li>canonical metric, including Kendall tau-b versus nugget scoring for BEAM event ordering;</li>
+<li>retries, failures, resume, and cache policy;</li>
+<li>accuracy by category;</li>
+<li>retrieval evidence recall where annotations exist;</li>
+<li>token use, ingest cost/time, and retrieval p50/p95;</li>
+<li>whether the run used benchmark labels, oracle evidence, agentic search, or native answer;</li>
+<li>confirmation that answers, evidence IDs, <code>has_answer</code>, and rubrics were excluded from ingestion;</li>
+<li>whether competitor numbers were locally rerun or copied from a publication.</li>
+</ul>
+<h2>Conclusion</h2>
+<p>Caura does not need to chase one magic <code>top_k</code>. The trial record shows that scores improve when storage granularity, retrieval coverage, context budget, reader behavior, and judge protocol are aligned.</p>
+<p>The clearest product gaps are temporal reference semantics, cross-session coverage, longitudinal preference state, summarization, and event ordering. The clearest evaluation gap is protocol discipline.</p>
+<p>If engineering fixes those two sets together, Caura can improve real memory behavior and produce benchmark numbers that remain credible when another team reruns them.</p>
+<h2>Internal evidence</h2>
+<ul>
+<li>AMB summary: <code>C:\Projects\caura-ai\yanki-AMB-benchmark\caura-RESULTS.md</code></li>
+<li>AMB engineering audit: <code>C:\Projects\caura-ai\yanki-AMB-benchmark\CAURA-ENGINEERING-NOTE-2026-09-06.md</code></li>
+<li>AMB result artifacts: <code>C:\Projects\caura-ai\yanki-AMB-benchmark\outputs\personamem\</code></li>
+<li>LongMemEval corrected result: <code>C:\Projects\caura-ai\yanki-longmemeval\outputs\caura-200-adaptive-v1\eval_results.json</code></li>
+<li>LongMemEval repair record: <code>C:\Projects\caura-ai\yanki-longmemeval\outputs\caura-200-adaptive-v1\baseline_repair.json</code></li>
+<li>LongMemEval judge variants: <code>C:\Projects\caura-ai\yanki-longmemeval\outputs\caura-50-adaptive-v4\</code></li>
+<li>BEAM result: <code>C:\Projects\caura-ai\yanki-beam\outputs\caura-100k-harness_72ba6b53\beam_results_20260909_162921.json</code></li>
+<li>Caura benchmark notes: <code>C:\Projects\caura-ai\caura\BENCHMARKS.md</code></li>
+<li>Caura temporal scoring: <code>C:\Projects\caura-ai\caura\core-storage-api\src\core_storage_api\services\postgres_service.py</code></li>
+<li>Caura grounded recall: <code>C:\Projects\caura-ai\caura\core-api\src\core_api\services\recall_service.py</code></li>
+</ul>
+</article>
+  </div>
+  <footer class="footer">Caura engineering · Internal benchmark evidence current to 10 September 2026 · Protocol labels and source links are part of the result.</footer>
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var themeButton = document.getElementById('theme');
+      var saved = localStorage.getItem('caura-playbook-theme');
+      var initial = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+
+      function setTheme(theme) {
+        root.dataset.theme = theme;
+        themeButton.textContent = theme === 'dark' ? 'Light theme' : 'Dark theme';
+      }
+
+      setTheme(initial);
+      themeButton.addEventListener('click', function () {
+        var next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+        localStorage.setItem('caura-playbook-theme', next);
+        setTheme(next);
+      });
+      document.getElementById('print').addEventListener('click', function () { window.print(); });
+
+      var toc = document.getElementById('toc');
+      var seen = {};
+      var headings = Array.from(document.querySelectorAll('#report h2, #report h3'));
+      headings.forEach(function (heading) {
+        var base = heading.textContent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'section';
+        seen[base] = (seen[base] || 0) + 1;
+        heading.id = seen[base] === 1 ? base : base + '-' + seen[base];
+        var link = document.createElement('a');
+        link.href = '#' + heading.id;
+        link.textContent = heading.textContent;
+        link.dataset.level = heading.tagName.slice(1);
+        toc.appendChild(link);
+      });
+
+      var links = Array.from(toc.querySelectorAll('a'));
+      var observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            links.forEach(function (link) {
+              link.classList.toggle('active', link.getAttribute('href') === '#' + entry.target.id);
+            });
+          }
+        });
+      }, { rootMargin: '-18% 0px -72% 0px' });
+      headings.forEach(function (heading) { observer.observe(heading); });
+
+      document.querySelectorAll('a[href^="http"]').forEach(function (link) {
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      });
+
+      var progress = document.querySelector('.progress');
+      function updateProgress() {
+        var total = document.documentElement.scrollHeight - window.innerHeight;
+        progress.style.width = (total > 0 ? window.scrollY / total * 100 : 0) + '%';
+      }
+      addEventListener('scroll', updateProgress, { passive: true });
+      updateProgress();
+    })();
+  </script>
+</body>
+</html>
