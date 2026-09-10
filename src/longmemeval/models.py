@@ -1,0 +1,64 @@
+"""LongMemEval benchmark models and data structures."""
+
+from __future__ import annotations
+
+from typing import Any
+from pydantic import BaseModel, Field
+
+
+class ChatTurn(BaseModel):
+    role: str
+    content: str
+    has_answer: bool = False
+
+
+class LongMemEvalItem(BaseModel):
+    question_id: str
+    question: str
+    answer: str = ""
+    question_type: str
+    question_date: str
+    haystack_sessions: list[list[dict[str, Any]]]
+    haystack_dates: list[str]
+    haystack_session_ids: list[str]
+    other_attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryDocument(BaseModel):
+    id: str
+    content: str
+    user_id: str  # maps to question_id in LongMemEval for per-question isolation
+    timestamp: str | None = None
+    context: str | None = None
+
+
+class RetrievedFact(BaseModel):
+    id: str
+    content: str
+    score: float | None = None
+    timestamp: str | None = None
+    memory_type: str | None = None
+    title: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class HypothesisEntry(BaseModel):
+    question_id: str
+    hypothesis: str
+    question: str | None = None
+    answer: str | None = None
+    question_type: str | None = None
+    context: str | None = None
+    retrieve_time_ms: float = 0.0
+    generate_time_ms: float = 0.0
+
+
+class EvaluationResult(BaseModel):
+    question_id: str
+    question: str
+    gold_answer: str
+    hypothesis: str
+    question_type: str
+    correct: bool
+    judge_reason: str
+    judge_model: str
