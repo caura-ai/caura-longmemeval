@@ -2,8 +2,34 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 from pydantic import BaseModel, Field
+
+
+@dataclass(frozen=True)
+class EvidenceBundle:
+    status: str  # "direct" | "inferable" | "unsupported"
+    facts: tuple[str, ...]
+    requirements: tuple[str, ...]
+
+    def as_context(self) -> str:
+        lines = [f"Support status: {self.status}"]
+        if self.requirements:
+            lines.append("Requirements:")
+            lines.extend(f"- {req}" for req in self.requirements)
+        lines.append("Extracted facts:")
+        if self.facts:
+            lines.extend(f"- {fact}" for fact in self.facts)
+        else:
+            lines.append("- None")
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class VerifiedAnswer:
+    answer: str
+    reason: str
 
 
 class ChatTurn(BaseModel):
@@ -51,6 +77,8 @@ class HypothesisEntry(BaseModel):
     context: str | None = None
     retrieve_time_ms: float = 0.0
     generate_time_ms: float = 0.0
+    pipeline: str | None = "direct"
+    pipeline_trace: dict[str, Any] | None = None
 
 
 class EvaluationResult(BaseModel):

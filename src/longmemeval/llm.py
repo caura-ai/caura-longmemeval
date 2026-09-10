@@ -4,11 +4,31 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any
 from rich.console import Console
 
+from .models import EvidenceBundle, VerifiedAnswer
+
 console = Console()
+
+
+def _parse_json_object(raw: str) -> dict[str, Any] | None:
+    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _string_tuple(value: Any, limit: int) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item).strip() for item in value[:limit] if str(item).strip())
 
 
 class BaseLLM:
@@ -20,6 +40,88 @@ class BaseLLM:
     def judge_bool(self, prompt: str) -> tuple[bool, str]:
         """Returns (is_correct, explanation)."""
         raise NotImplementedError
+
+    def extract_evidence(
+        self,
+        question: str,
+        context: str,
+        question_date: str | None = None,
+    ) -> EvidenceBundle:
+        """Stage 1: Extract up to 12 facts and classify support status."""
+        from .prompts import build_extract_evidence_prompt
+        prompt = build_extract_evidence_prompt(question, context, question_date)
+        raw = self.generate(prompt, max_tokens=2048, temperature=0.0).strip()
+        parsed = _parse_json_object(raw)
+        if parsed is None:
+            raw = self.generate(
+                f"{prompt}\n\nYour previous output was not valid JSON. Return one valid JSON object with keys: status, facts, requirements.",
+                max_tokens=2048,
+                temperature=0.0,
+            ).strip()
+            parsed = _parse_json_object(raw)
+
+        if parsed is None:
+            return EvidenceBundle("unsupported", (), ("Answer the question accurately.",))
+
+        status = str(parsed.get("status", "unsupported")).lower()
+        if status not in {"direct", "inferable", "unsupported"}:
+            status = "direct" if parsed.get("facts") else "unsupported"
+        facts = _string_tuple(parsed.get("facts"), limit=12)
+        requirements = _string_tuple(parsed.get("requirements"), limit=8)
+        return EvidenceBundle(status, facts, requirements)
+
+    def answer_from_evidence(
+        self,
+        question: str,
+        evidence: EvidenceBundle,
+        question_date: str | None = None,
+        max_tokens: int = 1024,
+    ) -> str:
+        """Stage 2: Generate candidate answer from extracted facts."""
+        from .prompts import build_evidence_answer_prompt
+        prompt = build_evidence_answer_prompt(question, evidence.as_context(), question_date)
+        return self.generate(prompt, max_tokens=max_tokens, temperature=0.0).strip()
+
+    def infer_answer(
+        self,
+        question: str,
+        evidence: EvidenceBundle,
+        question_date: str | None = None,
+        max_tokens: int = 1024,
+    ) -> str:
+        """Stage 3: Conditional narrow inference or temporal calculation."""
+        from .prompts import build_infer_answer_prompt
+        prompt = build_infer_answer_prompt(question, evidence.as_context(), question_date)
+        return self.generate(prompt, max_tokens=max_tokens, temperature=0.0).strip()
+
+    def verify_answer(
+        self,
+        question: str,
+        evidence: EvidenceBundle,
+        candidates: tuple[str, ...],
+        question_date: str | None = None,
+    ) -> VerifiedAnswer:
+        """Stage 4: Verify candidate answer, repair counts/dates, or hold back if unsupported."""
+        from .prompts import build_verify_answer_prompt
+        prompt = build_verify_answer_prompt(question, evidence.as_context(), candidates, question_date)
+        raw = self.generate(prompt, max_tokens=1024, temperature=0.0).strip()
+        parsed = _parse_json_object(raw)
+        if parsed is None or not str(parsed.get("answer", "")).strip():
+            raw = self.generate(
+                f"{prompt}\n\nYour previous output was not valid JSON. Return JSON only: {{\"answer\":\"final answer\",\"reason\":\"brief reason\"}}",
+                max_tokens=1024,
+                temperature=0.0,
+            ).strip()
+            parsed = _parse_json_object(raw)
+
+        if parsed is None or not str(parsed.get("answer", "")).strip():
+            fallback = candidates[0] if candidates else "You did not mention this information in our chats."
+            return VerifiedAnswer(fallback, "Verifier fallback.")
+
+        return VerifiedAnswer(
+            str(parsed.get("answer", "")).strip(),
+            str(parsed.get("reason", "Verified against extracted facts.")).strip(),
+        )
 
 
 class GeminiLLM(BaseLLM):
