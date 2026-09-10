@@ -367,9 +367,9 @@
       <span class="metric__note">Research-optimized · 171/200</span>
     </div>
     <div class="metric">
-      <span class="metric__value">82.4%</span>
-      <span class="metric__name">LongMemEval</span>
-      <span class="metric__note">Official-mix projection</span>
+      <span class="metric__value">82.5%</span>
+      <span class="metric__name">LoCoMo · holdout</span>
+      <span class="metric__note">33/40 answerable · 50% abstention</span>
     </div>
     <div class="metric metric--blue">
       <span class="metric__value">49.0%</span>
@@ -380,7 +380,7 @@
   <p class="hero__source">Source: internal benchmark artifacts · trials completed 6–10 September 2026 · protocols differ by benchmark</p>
 </section>
 <blockquote>
-<p><strong>One week of progress:</strong> Over the last seven days, Caura moved from scattered, partly invalid benchmark runs to a credible measurement program across three complementary suites. We established a full 85.4% PersonaMem result, repaired LongMemEval&#39;s missing-history baseline and reached 171/200 (85.5% research-optimized; 82.4% projected on the official mix), and lifted the observed BEAM 100K pass rate from 41.0% to 47.0% in the newer harness while discovering that <code>top_20</code> beats <code>top_200</code> at one fifth of the context. Just as importantly, we exposed the causes behind misleading numbers—contaminated scopes, incomplete ingestion, gold-label adaptation, judge variance, and protocol/model mismatches. The result is more than a higher score: we now know which gains belong to Caura, which belong to the harness, and which server improvements should produce the next durable step-change.</p>
+<p><strong>One week of progress:</strong> Over the last seven days, Caura moved from scattered, partly invalid benchmark runs to a credible measurement program across four complementary suites. We established a full 85.4% PersonaMem result, repaired LongMemEval&#39;s missing-history baseline and reached 171/200 (85.5% research-optimized; 82.4% projected on the official mix), and lifted the observed BEAM 100K pass rate from 41.0% to 47.0% in the newer harness while discovering that <code>top_20</code> beats <code>top_200</code> at one fifth of the context. Most recently, an agentic reader crossed 80% on a question-disjoint LoCoMo holdout: <strong>33/40 answerable questions, or 82.5%</strong>, with 99.2% annotated-evidence recall. The paired direct reader scored 77.5% on the same Caura memories, proving the five-point lift belongs to answer orchestration rather than the memory server; the agentic path also reduced adversarial abstention from 100% to 50%. Just as importantly, we exposed the causes behind misleading numbers—contaminated scopes, incomplete ingestion, gold-label adaptation, judge variance, and protocol/model mismatches. The result is more than a higher score: we now know which gains belong to Caura, which belong to the harness, and which server improvements should produce the next durable step-change.</p>
 </blockquote>
 <h2>Executive summary</h2>
 <p>Agent-memory benchmark scores are not a direct measurement of the memory server. They are the output of a pipeline:</p>
@@ -395,7 +395,7 @@
 <li><strong>AMB / PersonaMem 32k:</strong> 503/589, <strong>85.4%</strong>, using raw 2k-character chunks, <code>top_k=50</code>, Gemini 3.8 Flash as answerer, and exact MCQ-letter scoring. The output records a Gemini 2.5 Flash-Lite judge configuration, but PersonaMem does not invoke that judge. This is our strongest full, non-label-leaking result. The local summary places it 1.0 point above Hybrid Search and 1.2 points below Hindsight, with materially faster ingestion; the raw comparator artifacts are not present in this checkout, so those cross-provider deltas should be treated as reported rather than independently reverified here.</li>
 <li><strong>LongMemEval:</strong> corrected 171/200, <strong>85.5%</strong>, using Gemini 3.8 Flash and Gemini 3.5 Flash-Lite. Because the harness directly uses the benchmark&#39;s <code>question_type</code> label to choose retrieval settings, this is a research-optimized result, not a fair production-style headline. Reweighting its category rates to the official 500-question mix projects roughly <strong>82.4%</strong>.</li>
 <li><strong>BEAM 100K:</strong> <strong>47.0% pass rate</strong> and <strong>0.450 average nugget score</strong> at <code>top_200</code>; <code>top_20</code> was better at <strong>49.0% / 0.492</strong> while using one fifth of the answer context. Summarization remained 0%, and event ordering 5%, exposing architectural gaps that larger <code>top_k</code> does not solve.</li>
-<li><strong>LoCoMo:</strong> the repository still publishes <strong>77.6%</strong> from April 2026, but does not contain the end-to-end raw output needed to reproduce that number. Treat it as a legacy directional result, not the current baseline.</li>
+<li><strong>LoCoMo:</strong> the newest balanced, question-disjoint holdout scored <strong>82.5% semantic accuracy (33/40 answerable questions; 95% CI 68.0–91.3%)</strong>, with <strong>100% evidence hit rate</strong> and <strong>99.2% annotated-evidence recall</strong>. It used 4k-character production bulk memories, <code>top_k=30</code>, one literal query, and Gemini 3.8 Flash as both reader and judge. The ten adversarial questions are reported separately and scored 50% abstention. This is our strongest current LoCoMo semantic result, but it is a 50-question balanced holdout—not the full 1,540-question modern subset or the original token-F1 protocol.</li>
 </ul>
 <p>The highest-value work is:</p>
 <ol>
@@ -787,18 +787,38 @@
 <p>The previous 200-question Caura run scored 41.0% at <code>top_200</code>; the newer harness scored 47.0%. Because harness and context handling changed, this is evidence of protocol sensitivity, not a measured six-point Caura server gain.</p>
 <p>The highest-value BEAM work is not a 1M run yet. First fix protocol metadata, date semantics, session coverage, summarization memory, and event ordering. Then run the first publishable paired Caura/Mem0 1M evaluation with GPT-4o, <code>top_200</code>, the same 100 conversations, and both pass rate and average score.</p>
 <h3>LoCoMo</h3>
-<p>The current Caura repository says:</p>
+<p>Newest held-out artifact:</p>
 <ul>
-<li>77.6% LLM-judge accuracy;</li>
-<li>96.6% token savings versus full context;</li>
-<li>last run 19 April 2026.</li>
+<li>output: <code>C:\Projects\caura-ai\yanki-locomo\outputs\caura-agentic-v1-holdout50-seed23-20260910\results.json</code>;</li>
+<li>pinned LoCoMo dataset SHA-256 <code>79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4</code>;</li>
+<li>50 questions selected with seed 23, balanced at 10 per category and excluding all 50 questions from the earlier <code>caura-flash38-50-k30-20260910</code> development result;</li>
+<li>production bulk-strong ingestion, 4k-character chunks, one isolated agent/fleet per conversation;</li>
+<li>memories reused from <code>caura-balanced-50-v3-20260910</code>;</li>
+<li><code>top_k=30</code>, one literal query, no multiquery;</li>
+<li>Gemini 3.8 Flash reader and judge, temperature zero;</li>
+<li>agentic stages: evidence extraction, answer, conditional inference, and context-only verification.</li>
 </ul>
-<p>The end-to-end harness output is not bundled. The repository does include two useful retrieval-isolation harnesses:</p>
+<p>Results:</p>
 <ul>
-<li><code>scripts/benchmark_blend_locomo.py</code> for first-stage lexical/vector blending;</li>
-<li><code>scripts/benchmark_rerank_locomo.py</code> for order-only reranker evaluation on a fixed candidate pool.</li>
+<li>answerable semantic accuracy: <strong>33/40, 82.5%</strong>; Wilson 95% CI <strong>68.0–91.3%</strong>;</li>
+<li>multi-hop: 8/10; temporal: 7/10; open-domain: 9/10; single-hop: 9/10;</li>
+<li>adversarial abstention: <strong>5/10, 50%</strong>, reported separately;</li>
+<li>lexical F1: 0.538;</li>
+<li>annotated-evidence hit rate: <strong>100%</strong>;</li>
+<li>annotated-evidence recall: <strong>99.2%</strong>;</li>
+<li>retrieval p50/p95: 1.44/3.58 seconds;</li>
+<li>generation p50/p95: 5.37/10.12 seconds.</li>
 </ul>
-<p>These scripts correctly distinguish recall from ordering and use paired statistics. They exclude category 5 because it has no evidence turn to retrieve. No saved output was found, so reranking or blend claims should be rerun before being used as a current result.</p>
+<p>The paired direct run used the same held-out questions, memories, retrieval settings, reader, and judge. It scored:</p>
+<ul>
+<li>answerable semantic accuracy: <strong>31/40, 77.5%</strong>;</li>
+<li>adversarial abstention: <strong>10/10, 100%</strong>;</li>
+<li>lexical F1: 0.620;</li>
+<li>generation p50/p95: 1.69/4.31 seconds.</li>
+</ul>
+<p>The comparison is unusually informative. Agentic orchestration gained five observed semantic-accuracy points without changing stored memory, but it was roughly three times slower at p50, lowered lexical F1, and lost five abstention decisions. The wide, overlapping confidence intervals also mean 40 answerable questions are insufficient to establish a stable accuracy gain. The next run should freeze both pipelines and evaluate the full 1,540 category 1–4 questions, with all 446 adversarial questions retained as a separate abstention panel.</p>
+<p>Retrieval is no longer the dominant issue on this sample: nearly every annotated evidence turn reached the reader. The remaining errors primarily test reasoning, answer control, and abstention behavior. This supports the broader conclusion from LongMemEval that once evidence recall is near saturation, adding more <code>top_k</code> is less valuable than better evidence use.</p>
+<p>The previous 77.6% April 2026 claim remains a legacy directional result because its end-to-end artifact is absent. It should no longer be presented as Caura&#39;s current LoCoMo baseline.</p>
 <h2>6. Recommended Caura engineering roadmap</h2>
 <h3>P0: protocol and temporal correctness</h3>
 <h4>Freeze two evaluation tracks</h4>
@@ -896,7 +916,7 @@
 <h2>7. Experimental plan</h2>
 <h3>Phase 1: one week</h3>
 <ul>
-<li>freeze manifests for all three local harnesses;</li>
+<li>freeze manifests for all four local harnesses;</li>
 <li>remove benchmark-label access from comparable LongMemEval;</li>
 <li>forward <code>valid_at</code>;</li>
 <li>fix BEAM protocol enforcement so metadata cannot say comparable with the wrong models;</li>
@@ -955,6 +975,8 @@
 <li>LongMemEval repair record: <code>C:\Projects\caura-ai\yanki-longmemeval\outputs\caura-200-adaptive-v1\baseline_repair.json</code></li>
 <li>LongMemEval judge variants: <code>C:\Projects\caura-ai\yanki-longmemeval\outputs\caura-50-adaptive-v4\</code></li>
 <li>BEAM result: <code>C:\Projects\caura-ai\yanki-beam\outputs\caura-100k-harness_72ba6b53\beam_results_20260909_162921.json</code></li>
+<li>LoCoMo held-out agentic result: <code>C:\Projects\caura-ai\yanki-locomo\outputs\caura-agentic-v1-holdout50-seed23-20260910\results.json</code></li>
+<li>LoCoMo paired direct result: <code>C:\Projects\caura-ai\yanki-locomo\outputs\caura-direct-holdout50-seed23-20260910\results.json</code></li>
 <li>Caura benchmark notes: <code>C:\Projects\caura-ai\caura\BENCHMARKS.md</code></li>
 <li>Caura temporal scoring: <code>C:\Projects\caura-ai\caura\core-storage-api\src\core_storage_api\services\postgres_service.py</code></li>
 <li>Caura grounded recall: <code>C:\Projects\caura-ai\caura\core-api\src\core_api\services\recall_service.py</code></li>
