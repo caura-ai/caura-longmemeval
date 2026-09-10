@@ -54,6 +54,7 @@ def run(
     pipeline: str = typer.Option("direct", "--pipeline", help="Pipeline architecture: direct | agentic-v1"),
     exclude_results: Optional[list[Path]] = typer.Option(None, "--exclude-results", help="Exclude question IDs from previous results.json / eval_results.json / hypotheses.jsonl"),
     seed: Optional[int] = typer.Option(None, "--seed", help="Random seed for sampling questions"),
+    concurrency: int = typer.Option(5, "--concurrency", "-c", help="Concurrent workers for retrieval, generation, and judging"),
     data_path: Optional[Path] = typer.Option(None, "--data-path", help="Local path to longmemeval_s_cleaned.json"),
     output_dir: Path = typer.Option(Path("outputs"), "--output-dir", "-o", help="Directory for benchmark outputs"),
 ):
@@ -91,6 +92,7 @@ def run(
             pipeline=pipeline,
             exclude_ids=excluded_ids if excluded_ids else None,
             seed=seed,
+            concurrency=concurrency,
         )
     finally:
         mem_provider.cleanup()
