@@ -89,9 +89,12 @@ def evaluate_hypotheses(
     judge_llm: str = typer.Option("gemini", "--judge", help="Judge provider: gemini | openai | grok"),
     judge_model: Optional[str] = typer.Option(None, "--judge-model", help="Model name for judge LLM"),
     output_path: Optional[Path] = typer.Option(None, "--output", "-o", help="Path to write eval_results.json"),
+    generate_html: bool = typer.Option(True, "--html/--no-html", help="Generate HTML benchmark report"),
 ):
     """Evaluate an existing hypothesis file against ground truth without running ingestion/retrieval."""
     import json
+    from .report import generate_report_for_run
+
     ds = LongMemEvalDataset(data_path=data_path)
     items = ds.load_items()
 
@@ -103,7 +106,96 @@ def evaluate_hypotheses(
 
     judge = get_llm(provider=judge_llm, model=judge_model or os.environ.get("JUDGE_MODEL"))
     evaluator = Evaluator(judge_llm=judge)
-    evaluator.evaluate(hypotheses, items, out_eval_path=output_path)
+    eval_target = output_path or (hypotheses_path.parent / "eval_results.json")
+    summary = evaluator.evaluate(hypotheses, items, out_eval_path=eval_target)
+
+    if generate_html and eval_target:
+        try:
+            run_dir = eval_target.parent
+            rep = generate_report_for_run(run_dir, eval_file_name=eval_target.name)
+            console.print(f"\n[bold green]HTML Benchmark Report:[/bold green] [cyan]{rep}[/cyan]\n")
+        except Exception as e:
+            console.print(f"[yellow]Could not generate HTML report: {e}[/yellow]")
+
+
+@app.command()
+def report(
+    run_path: Optional[str] = typer.Argument(
+        None,
+        help="Name or path of run directory in outputs/ (e.g. outputs/caura-50-adaptive-v4 or caura-50-adaptive-v4)",
+    ),
+    all_runs: bool = typer.Option(
+        False,
+        "--all",
+        "-a",
+        help="Generate HTML reports for all run directories in outputs/",
+    ),
+    eval_file: str = typer.Option(
+        "eval_results.json",
+        "--eval-file",
+        help="Name of evaluation results file (e.g. eval_results.json or eval_results_gpt4o.json)",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Custom destination path for the HTML report",
+    ),
+    open_browser: bool = typer.Option(
+        False,
+        "--open",
+        help="Open the generated HTML report in your default browser",
+    ),
+):
+    """Generate a stunning HTML benchmark report for one or all runs."""
+    import webbrowser
+    from .report import generate_report_for_run
+
+    outputs_dir = Path("outputs")
+    target_runs: list[Path] = []
+
+    if all_runs:
+        if not outputs_dir.exists():
+            console.print("[red]Outputs directory does not exist.[/red]")
+            raise typer.Exit(1)
+        target_runs = [d for d in sorted(outputs_dir.iterdir()) if d.is_dir() and list(d.glob("eval_results*.json"))]
+    elif run_path:
+        p = Path(run_path)
+        if not p.exists() and (outputs_dir / run_path).exists():
+            p = outputs_dir / run_path
+        if not p.exists():
+            console.print(f"[red]Run directory does not exist: {run_path}[/red]")
+            raise typer.Exit(1)
+        target_runs = [p]
+    else:
+        # Default to the most recently modified run directory with eval_results
+        if outputs_dir.exists():
+            candidates = [d for d in outputs_dir.iterdir() if d.is_dir() and list(d.glob("eval_results*.json"))]
+            if candidates:
+                candidates.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+                target_runs = [candidates[0]]
+                console.print(f"[dim]No run specified. Using latest run: {candidates[0].name}[/dim]")
+        if not target_runs:
+            console.print("[red]No runs found with evaluation results. Specify a run directory or use --all.[/red]")
+            raise typer.Exit(1)
+
+    last_report: Optional[Path] = None
+    success_count = 0
+
+    for rdir in target_runs:
+        try:
+            dest = output if (output and len(target_runs) == 1) else None
+            rep = generate_report_for_run(rdir, output_file=dest, eval_file_name=eval_file)
+            console.print(f"[bold green]Report rendered for {rdir.name}:[/bold green] [cyan]{rep}[/cyan]")
+            last_report = rep
+            success_count += 1
+        except Exception as e:
+            console.print(f"[yellow]Could not render report for {rdir.name}: {e}[/yellow]")
+
+    console.print(f"\n[bold green]Successfully generated {success_count} HTML report(s).[/bold green]")
+
+    if open_browser and last_report and last_report.exists():
+        webbrowser.open(last_report.resolve().as_uri())
 
 
 @app.command()

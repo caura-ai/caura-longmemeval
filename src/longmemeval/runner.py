@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -160,6 +161,7 @@ class BenchmarkRunner:
         run_dir.mkdir(parents=True, exist_ok=True)
         hypotheses_path = run_dir / "hypotheses.jsonl"
         eval_path = run_dir / "eval_results.json"
+        started_at = datetime.now(timezone.utc)
 
         console.print(
             f"\n[bold]Starting LongMemEval Benchmark[/bold]\n"
@@ -244,6 +246,58 @@ class BenchmarkRunner:
         console.print("\n[bold]Evaluating hypotheses with judge LLM...[/bold]")
         summary = self.evaluator.evaluate(hypotheses, items, out_eval_path=eval_path)
 
+        finished_at = datetime.now(timezone.utc)
+        duration_s = (finished_at - started_at).total_seconds()
+
+        # Build comprehensive benchmark result payload and generate stunning HTML report
+        from .report import build_report_payload, render_report
+
+        run_meta = {
+            "name": effective_name,
+            "provider": self.provider.name,
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "duration_seconds": duration_s,
+            "top_k": top_k,
+            "skip_ingest": skip_ingest,
+            "reader": getattr(self.reader_llm, "model_name", "unknown"),
+            "judge": getattr(self.judge_llm, "model_name", "unknown"),
+            "parameters": {
+                "selection": {
+                    "category": category,
+                    "limit": limit,
+                    "limit_per_category": limit_per_category,
+                    "question_id": question_id,
+                    "total_questions": len(items),
+                },
+                "ingestion": {
+                    "provider": self.provider.name,
+                    "skip_ingest": skip_ingest,
+                    "chunk_chars": getattr(self.provider, "chunk_chars", None),
+                },
+                "retrieval": {
+                    "top_k": top_k,
+                    "category_adaptive": getattr(self.provider, "category_adaptive", None),
+                    "context_ordering": "Chronological (oldest to newest)",
+                },
+                "generation": {
+                    "reader": getattr(self.reader_llm, "model_name", "unknown"),
+                    "judge": getattr(self.judge_llm, "model_name", "unknown"),
+                    "prompt": "Official answer prompt with chronological context",
+                },
+            },
+        }
+
+        result_payload = build_report_payload(run_meta, summary, hypotheses)
+
+        # Save consolidated results.json
+        results_path = run_dir / "results.json"
+        with open(results_path, "w", encoding="utf-8") as f:
+            json.dump(result_payload, f, indent=2, ensure_ascii=False)
+
+        # Render HTML report
+        report_path = render_report(result_payload, run_dir / "report.html")
+
         # Print rich summary table
         table = Table(title=f"LongMemEval Results: {effective_name}")
         table.add_column("Category", style="cyan")
@@ -255,5 +309,7 @@ class BenchmarkRunner:
 
         table.add_row("OVERALL", f"[bold green]{summary['overall_accuracy']:.1%}[/bold green]", str(summary["total_questions"]))
         console.print(table)
+
+        console.print(f"\n[bold green]HTML Benchmark Report:[/bold green] [cyan]{report_path}[/cyan]\n")
 
         return summary
