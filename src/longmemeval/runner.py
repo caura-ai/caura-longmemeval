@@ -56,15 +56,16 @@ class Evaluator:
         hypotheses: list[HypothesisEntry],
         items: list[LongMemEvalItem],
         out_eval_path: Path | None = None,
+        concurrency: int = 5,
     ) -> dict[str, Any]:
         items_by_id = {it.question_id: it for it in items}
         eval_results: list[EvaluationResult] = []
         qtype_results: dict[str, list[bool]] = {}
 
-        for h in hypotheses:
+        def judge_entry(h: HypothesisEntry) -> EvaluationResult | None:
             ref = items_by_id.get(h.question_id)
             if not ref:
-                continue
+                return None
 
             qtype = ref.question_type
             is_abstention = "_abs" in h.question_id
@@ -77,20 +78,30 @@ class Evaluator:
             )
 
             is_correct, reason = self.judge_llm.judge_bool(judge_prompt)
-            eval_results.append(
-                EvaluationResult(
-                    question_id=h.question_id,
-                    question=ref.question,
-                    gold_answer=ref.answer,
-                    hypothesis=h.hypothesis,
-                    question_type=qtype,
-                    correct=is_correct,
-                    judge_reason=reason,
-                    judge_model=getattr(self.judge_llm, "model_name", "unknown"),
-                )
+            return EvaluationResult(
+                question_id=h.question_id,
+                question=ref.question,
+                gold_answer=ref.answer,
+                hypothesis=h.hypothesis,
+                question_type=qtype,
+                correct=is_correct,
+                judge_reason=reason,
+                judge_model=getattr(self.judge_llm, "model_name", "unknown"),
             )
 
-            qtype_results.setdefault(qtype, []).append(is_correct)
+        if concurrency > 1 and len(hypotheses) > 1:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+                res_list = list(pool.map(judge_entry, hypotheses))
+            eval_results = [r for r in res_list if r is not None]
+        else:
+            for h in hypotheses:
+                r = judge_entry(h)
+                if r is not None:
+                    eval_results.append(r)
+
+        for res in eval_results:
+            qtype_results.setdefault(res.question_type, []).append(res.correct)
 
         total = len(eval_results)
         total_correct = sum(1 for r in eval_results if r.correct)
@@ -116,6 +127,112 @@ class Evaluator:
             console.print(f"[green]Saved evaluation results to {out_eval_path}[/green]")
 
         return summary
+
+
+def run_reader_pipeline(
+    reader_llm: BaseLLM,
+    question: str,
+    context: str,
+    question_date: str | None = None,
+    pipeline: str = "direct",
+) -> tuple[str, float, dict[str, Any] | None]:
+    """Execute either direct generation or multi-stage agentic-v1 pipeline."""
+    t0_gen = time.perf_counter()
+
+    if pipeline == "agentic-v1":
+        # Stage 1: Extract factual evidence and classify support status
+        t0_stage = time.perf_counter()
+        evidence_bundle = reader_llm.extract_evidence(
+            question=question,
+            context=context,
+            question_date=question_date,
+        )
+        extract_ms = (time.perf_counter() - t0_stage) * 1000
+
+        # Stage 2: Generate initial candidate from extracted evidence
+        t0_stage = time.perf_counter()
+        initial_answer = reader_llm.answer_from_evidence(
+            question=question,
+            evidence=evidence_bundle,
+            question_date=question_date,
+        )
+        initial_ms = (time.perf_counter() - t0_stage) * 1000
+
+        # Stage 3: Conditional narrow inference or temporal calculation
+        inference_answer: str | None = None
+        inference_ms = 0.0
+        should_infer = (
+            evidence_bundle.status == "inferable"
+            or "not mentioned" in initial_answer.lower()
+            or "might" in question.lower()
+            or "how many" in question.lower()
+        )
+        if should_infer and evidence_bundle.facts:
+            t0_stage = time.perf_counter()
+            inference_answer = reader_llm.infer_answer(
+                question=question,
+                evidence=evidence_bundle,
+                question_date=question_date,
+            )
+            inference_ms = (time.perf_counter() - t0_stage) * 1000
+        elif (evidence_bundle.status == "unsupported" or not evidence_bundle.facts) and context.strip():
+            # If evidence extractor returned unsupported on a non-empty context,
+            # generate candidate from raw context so verifier can arbitrate
+            t0_stage = time.perf_counter()
+            direct_prompt = build_answer_prompt(
+                query=question,
+                context=context,
+                question_date=question_date,
+            )
+            inference_answer = reader_llm.generate(direct_prompt)
+            inference_ms = (time.perf_counter() - t0_stage) * 1000
+
+        # Stage 4: Verify and, if unsupported, hold back
+        candidates = (initial_answer,) + ((inference_answer,) if inference_answer else ())
+        t0_stage = time.perf_counter()
+        verified = reader_llm.verify_answer(
+            question=question,
+            evidence=evidence_bundle,
+            candidates=candidates,
+            question_date=question_date,
+        )
+        verify_ms = (time.perf_counter() - t0_stage) * 1000
+
+        if not evidence_bundle.facts and inference_answer:
+            # If initial fact extraction returned empty on non-empty context,
+            # fall back to direct context-grounded candidate
+            hypothesis_ans = inference_answer
+            verifier_reason = f"Fact extractor returned empty; adopted direct context candidate. Verifier note: {verified.reason}"
+        else:
+            hypothesis_ans = verified.answer
+            verifier_reason = verified.reason
+
+        pipeline_trace = {
+            "pipeline": "agentic-v1",
+            "evidence_status": evidence_bundle.status,
+            "support_status": evidence_bundle.status,
+            "facts": list(evidence_bundle.facts),
+            "extracted_facts": list(evidence_bundle.facts),
+            "requirements": list(evidence_bundle.requirements),
+            "initial_answer": initial_answer,
+            "inference_answer": inference_answer,
+            "verifier_reason": verifier_reason,
+            "extract_ms": extract_ms,
+            "initial_ms": initial_ms,
+            "inference_ms": inference_ms,
+            "verify_ms": verify_ms,
+        }
+    else:
+        prompt = build_answer_prompt(
+            query=question,
+            context=context,
+            question_date=question_date,
+        )
+        hypothesis_ans = reader_llm.generate(prompt)
+        pipeline_trace = None
+
+    gen_ms = (time.perf_counter() - t0_gen) * 1000
+    return hypothesis_ans, gen_ms, pipeline_trace
 
 
 class BenchmarkRunner:
@@ -145,18 +262,23 @@ class BenchmarkRunner:
         run_name: str | None = None,
         skip_ingest: bool = False,
         top_k: int = 20,
+        pipeline: str = "direct",
+        exclude_ids: set[str] | list[str] | None = None,
+        seed: int | None = None,
     ) -> dict[str, Any]:
         items = self.dataset.load_items(
             category=category,
             limit=limit,
             limit_per_category=limit_per_category,
             question_id=question_id,
+            exclude_ids=exclude_ids,
+            seed=seed,
         )
         if not items:
             console.print("[red]No questions found matching criteria.[/red]")
             return {}
 
-        effective_name = run_name or f"{self.provider.name}-{int(time.time())}"
+        effective_name = run_name or f"{self.provider.name}-{pipeline}-{int(time.time())}"
         run_dir = self.output_dir / effective_name
         run_dir.mkdir(parents=True, exist_ok=True)
         hypotheses_path = run_dir / "hypotheses.jsonl"
@@ -165,7 +287,7 @@ class BenchmarkRunner:
 
         console.print(
             f"\n[bold]Starting LongMemEval Benchmark[/bold]\n"
-            f"Provider: [cyan]{self.provider.name}[/cyan] | Questions: [cyan]{len(items)}[/cyan] | Run: [cyan]{effective_name}[/cyan]\n"
+            f"Provider: [cyan]{self.provider.name}[/cyan] | Pipeline: [cyan]{pipeline}[/cyan] | Questions: [cyan]{len(items)}[/cyan] | Run: [cyan]{effective_name}[/cyan]\n"
         )
 
         hypotheses: list[HypothesisEntry] = []
@@ -215,16 +337,14 @@ class BenchmarkRunner:
 
             # 3. Generate answer
             context_text = format_facts(facts)
-            prompt = build_answer_prompt(
-                query=item.question,
+            hypothesis_ans, gen_ms, pipeline_trace = run_reader_pipeline(
+                reader_llm=self.reader_llm,
+                question=item.question,
                 context=context_text,
                 question_date=item.question_date,
+                pipeline=pipeline,
             )
-
-            t0_gen = time.perf_counter()
-            hypothesis_ans = self.reader_llm.generate(prompt)
-            gen_ms = (time.perf_counter() - t0_gen) * 1000
-            console.print(f"  [dim]Generated answer in {gen_ms:.0f}ms[/dim]")
+            console.print(f"  [dim]Generated answer ({pipeline}) in {gen_ms:.0f}ms[/dim]")
 
             entry = HypothesisEntry(
                 question_id=item.question_id,
@@ -235,6 +355,8 @@ class BenchmarkRunner:
                 context=context_text,
                 retrieve_time_ms=retrieve_ms,
                 generate_time_ms=gen_ms,
+                pipeline=pipeline,
+                pipeline_trace=pipeline_trace,
             )
             hypotheses.append(entry)
 
@@ -262,6 +384,7 @@ class BenchmarkRunner:
             "skip_ingest": skip_ingest,
             "reader": getattr(self.reader_llm, "model_name", "unknown"),
             "judge": getattr(self.judge_llm, "model_name", "unknown"),
+            "pipeline": pipeline,
             "parameters": {
                 "selection": {
                     "category": category,
@@ -269,6 +392,8 @@ class BenchmarkRunner:
                     "limit_per_category": limit_per_category,
                     "question_id": question_id,
                     "total_questions": len(items),
+                    "seed": seed,
+                    "excluded_count": len(exclude_ids) if exclude_ids else 0,
                 },
                 "ingestion": {
                     "provider": self.provider.name,
@@ -281,9 +406,10 @@ class BenchmarkRunner:
                     "context_ordering": "Chronological (oldest to newest)",
                 },
                 "generation": {
+                    "pipeline": pipeline,
                     "reader": getattr(self.reader_llm, "model_name", "unknown"),
                     "judge": getattr(self.judge_llm, "model_name", "unknown"),
-                    "prompt": "Official answer prompt with chronological context",
+                    "prompt": "agentic-v1 (extract -> answer -> infer -> verify)" if pipeline == "agentic-v1" else "Official answer prompt with chronological context",
                 },
             },
         }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import urllib.request
 from datetime import datetime, timezone
@@ -81,6 +82,36 @@ def parse_timestamp(date_str: str) -> datetime | None:
         return None
 
 
+def extract_question_ids_from_file(file_path: Path | str) -> set[str]:
+    """Extract question IDs from an existing results.json, eval_results.json, or hypotheses.jsonl."""
+    p = Path(file_path)
+    if not p.exists():
+        return set()
+    qids: set[str] = set()
+    if p.suffix == ".jsonl":
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        d = json.loads(line)
+                        if "question_id" in d:
+                            qids.add(d["question_id"])
+                    except Exception:
+                        pass
+        return qids
+
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            if "questions" in data and isinstance(data["questions"], list):
+                qids.update(q["question_id"] for q in data["questions"] if isinstance(q, dict) and "question_id" in q)
+            elif "results" in data and isinstance(data["results"], list):
+                qids.update(q["question_id"] for q in data["results"] if isinstance(q, dict) and "question_id" in q)
+    except Exception:
+        pass
+    return qids
+
+
 class LongMemEvalDataset:
     """Loader and adapter for LongMemEval."""
 
@@ -105,19 +136,24 @@ class LongMemEvalDataset:
         limit: int | None = None,
         limit_per_category: int | None = None,
         question_id: str | None = None,
+        exclude_ids: set[str] | list[str] | None = None,
+        seed: int | None = None,
     ) -> list[LongMemEvalItem]:
-        """Load benchmark questions."""
-        path = self.ensure_data()
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
+        """Load benchmark questions with optional filtering, category balancing, exclusion, and deterministic seeding."""
+        if hasattr(self, "_items") and self._items is not None:
+            raw = [item.model_dump() for item in self._items]
+        else:
+            path = self.ensure_data()
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
 
         allowed_categories = None
         if category:
             allowed_categories = {c.strip() for c in category.split(",") if c.strip()}
 
-        items: list[LongMemEvalItem] = []
-        cat_counts: dict[str, int] = {}
+        excluded_set = set(exclude_ids) if exclude_ids else set()
 
+        raw_candidates: list[dict[str, Any]] = []
         for d in raw:
             qid = d.get("question_id", "")
             qtype = d.get("question_type", "")
@@ -126,6 +162,22 @@ class LongMemEvalDataset:
                 continue
             if allowed_categories and qtype not in allowed_categories:
                 continue
+            if excluded_set and qid in excluded_set:
+                continue
+
+            raw_candidates.append(d)
+
+        # Deterministic shuffle if seed is provided
+        if seed is not None:
+            rng = random.Random(seed)
+            rng.shuffle(raw_candidates)
+
+        items: list[LongMemEvalItem] = []
+        cat_counts: dict[str, int] = {}
+
+        for d in raw_candidates:
+            qid = d.get("question_id", "")
+            qtype = d.get("question_type", "")
 
             if limit_per_category is not None:
                 if cat_counts.get(qtype, 0) >= limit_per_category:

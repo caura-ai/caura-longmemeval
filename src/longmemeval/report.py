@@ -164,6 +164,8 @@ def build_report_payload(
             "context_chars": ctx_len,
             "chunks_count": total_chunks_count,
             "retrieved_chunks": parsed_chunks,
+            "pipeline": hypo.get("pipeline") or run_meta.get("pipeline", "direct"),
+            "pipeline_trace": hypo.get("pipeline_trace"),
         })
 
     by_qtype = summary.get("by_question_type", {})
@@ -302,11 +304,18 @@ def generate_report_for_run(
         except Exception:
             pass
 
+    if "pipeline" not in run_meta:
+        first_hypo = next(iter(hypos.values())) if isinstance(hypos, dict) else (hypos[0] if hypos else None)
+        if first_hypo:
+            pipe = getattr(first_hypo, "pipeline", None) or (first_hypo.get("pipeline") if isinstance(first_hypo, dict) else None)
+            if pipe:
+                run_meta["pipeline"] = pipe
+                run_meta.setdefault("parameters", {}).setdefault("generation", {})["pipeline"] = pipe
+
     payload = build_report_payload(run_meta, eval_data, hypos)
 
-    # Save results.json if it didn't exist
-    if not results_json.exists():
-        results_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    # Save enriched results.json
+    results_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     dest = output_file or (run_dir / "report.html")
     return render_report(payload, dest)
@@ -1346,6 +1355,7 @@ const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;'
 document.querySelector('#run-chips').innerHTML = `
   <span class="chip">Run: <strong>${h(run.name || 'default')}</strong></span>
   <span class="chip">Provider: <strong>${h(run.provider || 'caura')}</strong></span>
+  ${(run.pipeline || genParams.pipeline || params.pipeline) ? `<span class="chip">Pipeline: <strong style="color:#a78bfa;">${h(run.pipeline || genParams.pipeline || params.pipeline)}</strong></span>` : ''}
   <span class="chip">Reader: <strong>${h(run.reader || genParams.reader || 'default')}</strong></span>
   <span class="chip">Judge: <strong>${h(run.judge || genParams.judge || 'default')}</strong></span>
   <span class="chip">Top-k: <strong>${h(run.top_k || retParams.top_k || 'adaptive')}</strong></span>
@@ -1598,6 +1608,33 @@ function renderQuestions() {
               <div class="judge-reason">${h(q.judge_reason || (q.correct ? 'Evaluation judge verified response agrees with ground truth.' : 'Response differed from reference ground truth.'))}</div>
             </div>
           </div>
+
+          ${q.pipeline_trace ? `
+            <div class="pipeline-panel" style="margin-top:14px; background:rgba(255,255,255,0.02); border:1px solid rgba(167,139,250,0.3); border-radius:8px; padding:12px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-weight:600; font-size:12px; color:#a78bfa; text-transform:uppercase; letter-spacing:0.05em;">
+                  🛡️ Multi-Stage Pipeline (${h(q.pipeline || 'agentic-v1')})
+                </span>
+                <span style="font-size:11px; color:var(--muted); font-family:monospace;">
+                  Support: <strong style="color:${q.pipeline_trace.support_status === 'direct' ? '#67d391' : q.pipeline_trace.support_status === 'inferable' ? '#f2bd5b' : '#ff6b7a'}">${h(q.pipeline_trace.support_status || 'direct')}</strong>
+                </span>
+              </div>
+              ${q.pipeline_trace.verifier_reason ? `
+                <div style="font-size:12px; color:var(--text); margin-bottom:8px; background:rgba(0,0,0,0.25); padding:8px; border-radius:6px; line-height:1.45;">
+                  <span style="color:var(--muted); font-size:11px; display:block; margin-bottom:2px; font-weight:600;">Verifier Reasoning:</span>
+                  ${h(q.pipeline_trace.verifier_reason)}
+                </div>
+              ` : ''}
+              ${q.pipeline_trace.extracted_facts && q.pipeline_trace.extracted_facts.length ? `
+                <details style="font-size:12px; margin-top:6px;">
+                  <summary style="cursor:pointer; color:var(--muted); font-size:11px;">Extracted Chronological Facts (${q.pipeline_trace.extracted_facts.length})</summary>
+                  <ul style="margin:6px 0 0 18px; padding:0; color:var(--text); line-height:1.4;">
+                    ${q.pipeline_trace.extracted_facts.map(f => `<li style="margin-bottom:3px;">${h(f)}</li>`).join('')}
+                  </ul>
+                </details>
+              ` : ''}
+            </div>
+          ` : ''}
 
           <div class="context-panel">
             <div class="context-header">
