@@ -1386,6 +1386,7 @@ const topKDisplay = isAdaptive ? `Adaptive (15–60, base ${baseK})` : fmtNum(ba
 document.querySelector('#run-chips').innerHTML = `
   <span class="chip">Run: <strong>${h(run.name || 'default')}</strong></span>
   <span class="chip">Provider: <strong>${h(run.provider || 'caura')}</strong></span>
+  ${(retParams.as_of_recall || retParams.valid_at || run.as_of_recall) ? `<span class="chip" style="border-color:#38bdf8;">Clock: <strong style="color:#38bdf8;">As-Of Recall</strong></span>` : ''}
   ${(run.pipeline || genParams.pipeline || params.pipeline) ? `<span class="chip">Pipeline: <strong style="color:#a78bfa;">${h(run.pipeline || genParams.pipeline || params.pipeline)}</strong></span>` : ''}
   <span class="chip">Reader: <strong>${h(run.reader || genParams.reader || 'default')}</strong></span>
   <span class="chip">Judge: <strong>${h(run.judge || genParams.judge || 'default')}</strong></span>
@@ -1416,6 +1417,7 @@ const paramGroups = [
     title: 'Retrieval Strategy',
     items: [
       ['Top-k Setting', topKDisplay],
+      ['As-Of Recall', (retParams.as_of_recall !== false && retParams.valid_at !== false) ? 'Enabled (anchored at question_date)' : 'Disabled (wall-clock)'],
       ['Search Strategy', retParams.strategy || (isAdaptive ? 'Adaptive profile / semantic search' : 'Semantic search')],
       ['Context Ordering', retParams.context_ordering || 'Chronological (oldest to newest)'],
       ['Avg Context Tokens', summary.retrieval ? `~${fmtNum(Math.round(summary.retrieval.avg_context_chars / 4))} est. tokens` : '—']

@@ -159,3 +159,18 @@ def test_load_items_with_exclusion():
     assert "item_0" not in loaded_ids
     assert "item_1" not in loaded_ids
     assert "item_2" not in loaded_ids
+
+
+def test_as_of_recall_provider_configuration(monkeypatch):
+    monkeypatch.setenv("CAURA_API_KEY", "dummy_key")
+    from longmemeval.providers import get_memory_provider
+    from longmemeval.providers.caura import CauraMemoryProvider
+
+    p_on = get_memory_provider("caura", as_of_recall=True)
+    assert isinstance(p_on, CauraMemoryProvider)
+    assert p_on.send_valid_at is True
+
+    p_off = get_memory_provider("caura", as_of_recall=False)
+    assert isinstance(p_off, CauraMemoryProvider)
+    assert p_off.send_valid_at is False
+

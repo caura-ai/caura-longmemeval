@@ -416,6 +416,8 @@ class BenchmarkRunner:
                 "retrieval": {
                     "top_k": top_k,
                     "category_adaptive": getattr(self.provider, "category_adaptive", None),
+                    "as_of_recall": getattr(self.provider, "send_valid_at", False),
+                    "valid_at": getattr(self.provider, "send_valid_at", False),
                     "context_ordering": "Chronological (oldest to newest)",
                 },
                 "generation": {

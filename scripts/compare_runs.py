@@ -1,9 +1,19 @@
 import json
+import sys
 from pathlib import Path
 
 def main():
-    p_before = Path("outputs/caura-50-adaptive-v4/results.json")
-    p_after = Path("outputs/caura-50-agentic-v1/results.json")
+    if len(sys.argv) >= 3:
+        p_before = Path(sys.argv[1])
+        p_after = Path(sys.argv[2])
+    else:
+        p_before = Path("outputs/caura-50-adaptive-v4/results.json")
+        p_after = Path("outputs/caura-50-agentic-v1/results.json")
+
+    if p_before.is_dir():
+        p_before = p_before / "results.json"
+    if p_after.is_dir():
+        p_after = p_after / "results.json"
 
     with open(p_before, "r", encoding="utf-8") as f:
         before = json.load(f)

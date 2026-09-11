@@ -146,6 +146,8 @@ class CauraMemoryProvider(BaseMemoryProvider):
         commit_batch: int = 50,
         ingest_workers: int = 4,
         category_adaptive: bool | None = None,
+        send_valid_at: bool | None = None,
+        as_of_recall: bool | None = None,
     ):
         self.base_url = (base_url or _env("BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
         self.api_key = api_key or _env("API_KEY")
@@ -187,7 +189,15 @@ class CauraMemoryProvider(BaseMemoryProvider):
         # Default ON; CAURA_VALID_AT=0 reproduces earlier runs. Pair with
         # ``search.default_profile.freshness_reference=1`` on the tenant for the
         # freshness half (see the memory_bench adapter's docstring).
-        self.send_valid_at = _env("VALID_AT", "1").lower() in ("1", "true", "yes")
+        if send_valid_at is not None:
+            self.send_valid_at = bool(send_valid_at)
+        elif as_of_recall is not None:
+            self.send_valid_at = bool(as_of_recall)
+        else:
+            self.send_valid_at = _env("VALID_AT", "1").lower() in ("1", "true", "yes")
+
+        self.as_of_recall = self.send_valid_at
+        self._as_of_recall_ensured = False
 
         self._client: httpx.Client | None = None
         self._lock = threading.Lock()
@@ -381,6 +391,23 @@ class CauraMemoryProvider(BaseMemoryProvider):
             time.sleep(self.settle_time)
         return stored
 
+    def ensure_as_of_recall(self) -> bool:
+        """Ensure tenant settings have freshness_reference=1 enabled on search.default_profile."""
+        if self._as_of_recall_ensured:
+            return True
+        try:
+            resp = self._request(
+                "PUT",
+                "/settings",
+                json={"search": {"default_profile": {"freshness_reference": 1}}},
+            )
+            if resp.status_code in (200, 204):
+                self._as_of_recall_ensured = True
+                return True
+        except Exception:
+            pass
+        return False
+
     def _search_once(
         self, query: str, agent_id: str, top_k: int | None = None, valid_at: str | None = None
     ) -> list[dict]:
@@ -394,10 +421,16 @@ class CauraMemoryProvider(BaseMemoryProvider):
         if valid_at:
             body["valid_at"] = valid_at
         resp = self._request("POST", "/search", json=body)
-        if resp.status_code == 422 and limit > 20:
-            # Fallback if live environment ceiling has not taken effect
-            body["top_k"] = 20
-            resp = self._request("POST", "/search", json=body)
+        if resp.status_code == 422:
+            retry_needed = False
+            if limit > 20:
+                body["top_k"] = 20
+                retry_needed = True
+            if "valid_at" in body:
+                del body["valid_at"]
+                retry_needed = True
+            if retry_needed:
+                resp = self._request("POST", "/search", json=body)
         if resp.status_code != 200:
             return []
         return resp.json().get("items") or []
@@ -411,6 +444,9 @@ class CauraMemoryProvider(BaseMemoryProvider):
         question_type: str | None = None,
     ) -> list[RetrievedFact]:
         agent_id = self.agent_id_for_unit(unit_id)
+
+        if self.send_valid_at and not self._as_of_recall_ensured:
+            self.ensure_as_of_recall()
 
         target_top_k = top_k
         target_merge_top_k = self.merge_top_k

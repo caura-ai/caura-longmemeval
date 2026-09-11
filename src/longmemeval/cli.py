@@ -51,6 +51,7 @@ def run(
     judge_model: Optional[str] = typer.Option(None, "--judge-model", help="Model name for judge LLM"),
     skip_ingest: bool = typer.Option(False, "--skip-ingest", help="Skip document ingestion (use existing store)"),
     top_k: int = typer.Option(20, "--top-k", "-k", help="Retrieval top_k (max 200 for Caura; when category adaptive is active, uses category profiles)"),
+    as_of_recall: bool = typer.Option(True, "--as-of-recall/--no-as-of-recall", help="Enable As-Of Recall: anchor temporal ranking and valid_at at question_date"),
     pipeline: str = typer.Option("direct", "--pipeline", help="Pipeline architecture: direct | agentic-v1"),
     exclude_results: Optional[list[Path]] = typer.Option(None, "--exclude-results", help="Exclude question IDs from previous results.json / eval_results.json / hypotheses.jsonl"),
     seed: Optional[int] = typer.Option(None, "--seed", help="Random seed for sampling questions"),
@@ -60,7 +61,7 @@ def run(
 ):
     """Run LongMemEval benchmark with selected memory provider and evaluator."""
     ds = LongMemEvalDataset(data_path=data_path)
-    mem_provider = get_memory_provider(provider)
+    mem_provider = get_memory_provider(provider, send_valid_at=as_of_recall, as_of_recall=as_of_recall)
     reader = get_llm(provider=reader_llm, model=reader_model or os.environ.get("READER_MODEL"))
     judge = get_llm(provider=judge_llm, model=judge_model or os.environ.get("JUDGE_MODEL"))
 
