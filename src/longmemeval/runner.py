@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .dataset import LongMemEvalDataset
-from .llm import BaseLLM, get_llm
+from .llm import MAP_REDUCE_THRESHOLD_CHARS, BaseLLM, _split_context_windows, get_llm
 from .models import EvaluationResult, HypothesisEntry, LongMemEvalItem
 from .prompts import build_answer_prompt, get_official_judge_prompt
 from .providers.base import BaseMemoryProvider
@@ -219,6 +219,9 @@ def run_reader_pipeline(
             "initial_answer": initial_answer,
             "inference_answer": inference_answer,
             "verifier_reason": verifier_reason,
+            "extract_windows": (
+                len(_split_context_windows(context)) if len(context) > MAP_REDUCE_THRESHOLD_CHARS else 1
+            ),
             "extract_ms": extract_ms,
             "initial_ms": initial_ms,
             "inference_ms": inference_ms,

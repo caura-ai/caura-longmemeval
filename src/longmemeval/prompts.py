@@ -78,14 +78,30 @@ def get_official_judge_prompt(
         return template.format(question, answer, response)
 
 
-def build_extract_evidence_prompt(query: str, context: str, question_date: str | None = None) -> str:
-    """Prompt for Stage 1 of agentic-v1: extract factual evidence and classify support status."""
+def build_extract_evidence_prompt(
+    query: str,
+    context: str,
+    question_date: str | None = None,
+    window: tuple[int, int] | None = None,
+) -> str:
+    """Prompt for Stage 1 of agentic-v1: extract factual evidence and classify support status.
+
+    ``window=(i, n)`` marks this call as reading slice i of n of a longer history; the
+    model is told other slices exist so it reports only what THIS slice contains.
+    """
     formatted_date = question_date if question_date else "Not specified"
+    window_note = ""
+    if window and window[1] > 1:
+        window_note = (
+            f"\nNOTE: This is window {window[0]} of {window[1]} of a longer chat history. Other windows are read separately "
+            f"and merged later. Extract only what THIS window contains. If this window has nothing relevant, return "
+            f'{{"status":"unsupported","facts":[],"requirements":[]}} - do NOT write facts saying the history lacks information.\n'
+        )
 
     return f"""Select and extract factual evidence for a conversational-memory question.
 Use only the retrieved chat history below. Do not assume facts that are not present.
 Do not use benchmark labels, gold answers, or outside assumptions. Do not answer the question yet.
-
+{window_note}
 Classify support status as:
 - direct: the memories explicitly contain the requested answer, event, fact, or preference;
 - inferable: the memories contain relevant facts that permit a narrow, straightforward inference or calculation (e.g. identifying a retailer or location from the conversational context, counting items across multiple chats, calculating dates/durations relative to current date, synthesizing user preference);
@@ -127,7 +143,8 @@ Question: {query}
 
 Guidelines:
 - Provide a clear, direct, and factual answer based on the extracted facts.
-- Include all key identifying details (e.g. names AND their roles/specialties, items AND their categories, destinations AND times) to make the answer fully complete.
+- Single-fact questions: if the question asks for ONE specific name, item, value, date, or place (e.g. "remind me of the name of...", "what was the...", "which ... did I..."), answer in a single sentence that states that value and nothing else. Do not add descriptions, features, menus, or other unrequested details; every extra claim is a chance to be wrong.
+- Multi-part questions: include all key identifying details (e.g. names AND their roles/specialties, items AND their categories, destinations AND times) to make the answer fully complete.
 - If the question asks for a count or total ("How many..."), count every distinct instance or item listed in the facts and state the exact integer count directly (e.g. "You have led 2 projects: ..."). Do not state that the total is unknown if distinct instances are present in the facts.
 - If an entity, attribute, or state changed over time (e.g. job, salary, pre-approval amount, location, pet name), state the MOST RECENT / UPDATED value directly as the primary answer (you may optionally note previous values as historical context).
 - If the question asks for recommendations, activities, or advice, generate personalized suggestions for the requested topic that strictly incorporate the user's explicit domain, background, and negative constraints (e.g. avoid screens, specific field like healthcare AI) from the facts.
@@ -153,6 +170,7 @@ Guidelines:
 - For time calculations, compute the difference relative to the stated dates and the Current Date ({formatted_date}).
 - For updated information or changed states, ensure the latest chronological update is the primary answer.
 - For preference queries, directly utilize the user's personal interests, field of study, and constraints.
+- If the question asks for one specific name, item, value, date, or place, answer in a single sentence with that value only; no unrequested elaboration.
 - If the premise is unsupported or no responsible inference is possible, answer: "You did not mention this information in the chat history."
 
 Answer:"""
@@ -177,6 +195,7 @@ Check:
 3. Personalization & Recommendations: If asked for recommendations, suggestions, or advice, ensure the answer delivers relevant suggestions that directly reflect the user's specific preferences, background field, and negative constraints from the evidence. Do NOT abstain on recommendation requests.
 4. Abstention vs Grounded Answers: If one of the candidates provides concrete historical details (e.g. specific dates like Feb 14/15, specific entity/restaurant names, or exact counts), prefer the candidate that answers with specific grounded details over a generic abstention. Only abstain if the information was genuinely never mentioned in the chat history.
 5. Directness: Keep the answer clear, complete, and direct.
+6. Terseness for single-fact questions: if the question asks for ONE specific name, item, value, date, or place, the final answer MUST be a single sentence stating that value and nothing else. Strip descriptions, features, menu details, and any other unrequested elaboration from the chosen candidate. Never list multiple alternative values to hedge.
 
 Question: {query}
 Current Date: {formatted_date}

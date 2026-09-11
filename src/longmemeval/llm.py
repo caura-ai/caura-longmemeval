@@ -31,6 +31,62 @@ def _string_tuple(value: Any, limit: int) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in value[:limit] if str(item).strip())
 
 
+# Contexts above this size are read in windows (map) and the facts merged (reduce).
+# Gemini Flash handles ~40k tokens, but empirically the single-pass extractor
+# returned empty or dropped mid-context facts on 4-6% of contexts >120k chars.
+MAP_REDUCE_THRESHOLD_CHARS = 120_000
+MAP_WINDOW_CHARS = 80_000
+MAX_MERGED_FACTS = 24
+_STATUS_RANK = {"direct": 2, "inferable": 1, "unsupported": 0}
+
+
+def _split_context_windows(context: str, window_chars: int = MAP_WINDOW_CHARS) -> list[str]:
+    """Split formatted context on chunk separators into windows of roughly window_chars."""
+    separator = "\n---\n"
+    chunks = context.split(separator)
+    windows: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for chunk in chunks:
+        if current and current_len + len(chunk) > window_chars:
+            windows.append(separator.join(current))
+            current, current_len = [], 0
+        current.append(chunk)
+        current_len += len(chunk) + len(separator)
+    if current:
+        windows.append(separator.join(current))
+    return windows
+
+
+_META_NEGATIVE_RE = re.compile(
+    r"\b(does not|doesn't|did not|didn't|do not|don't)\s+(mention|contain|specify|include|state|provide|record)"
+    r"|\b(no|without any)\s+(mention|record|information|details?|reference)\b"
+    r"|\bnot (mentioned|specified|provided|recorded|stated)\b"
+    r"|\b(retrieved|chat) history (lacks|only)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_meta_negative(fact: str) -> bool:
+    """True for extractor 'facts' that merely say the history lacks information."""
+    return bool(_META_NEGATIVE_RE.search(fact))
+
+
+def _dedupe_facts(facts: list[str], limit: int, drop_meta_negative: bool = False) -> tuple[str, ...]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for fact in facts:
+        if drop_meta_negative and _is_meta_negative(fact):
+            continue
+        key = re.sub(r"\W+", " ", fact.lower()).strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(fact)
+        if len(out) >= limit:
+            break
+    return tuple(out)
+
+
 class BaseLLM:
     """Base LLM interface."""
 
@@ -41,15 +97,16 @@ class BaseLLM:
         """Returns (is_correct, explanation)."""
         raise NotImplementedError
 
-    def extract_evidence(
+    def _extract_evidence_once(
         self,
         question: str,
         context: str,
         question_date: str | None = None,
-    ) -> EvidenceBundle:
-        """Stage 1: Extract up to 12 facts and classify support status."""
+        window: tuple[int, int] | None = None,
+    ) -> EvidenceBundle | None:
+        """Single-pass extraction. Returns None when the model produced no usable JSON."""
         from .prompts import build_extract_evidence_prompt
-        prompt = build_extract_evidence_prompt(question, context, question_date)
+        prompt = build_extract_evidence_prompt(question, context, question_date, window=window)
         raw = self.generate(prompt, max_tokens=2048, temperature=0.0).strip()
         parsed = _parse_json_object(raw)
         if parsed is None:
@@ -59,16 +116,69 @@ class BaseLLM:
                 temperature=0.0,
             ).strip()
             parsed = _parse_json_object(raw)
-
         if parsed is None:
-            return EvidenceBundle("unsupported", (), ("Answer the question accurately.",))
+            return None
 
         status = str(parsed.get("status", "unsupported")).lower()
-        if status not in {"direct", "inferable", "unsupported"}:
+        if status not in _STATUS_RANK:
             status = "direct" if parsed.get("facts") else "unsupported"
-        facts = _string_tuple(parsed.get("facts"), limit=12)
+        facts = _string_tuple(parsed.get("facts"), limit=15)
         requirements = _string_tuple(parsed.get("requirements"), limit=8)
         return EvidenceBundle(status, facts, requirements)
+
+    def extract_evidence(
+        self,
+        question: str,
+        context: str,
+        question_date: str | None = None,
+    ) -> EvidenceBundle:
+        """Stage 1: Extract facts and classify support status.
+
+        Large contexts are read in windows (map) and merged (reduce) so that facts
+        in the middle of a 150-200k char context are not dropped. An empty
+        extraction on non-empty context is retried once before falling back.
+        """
+        empty = EvidenceBundle("unsupported", (), ("Answer the question accurately.",))
+        if not context.strip():
+            return empty
+
+        windows = (
+            _split_context_windows(context)
+            if len(context) > MAP_REDUCE_THRESHOLD_CHARS
+            else [context]
+        )
+
+        n_windows = len(windows)
+        bundles: list[EvidenceBundle] = []
+        for idx, window in enumerate(windows, start=1):
+            win = (idx, n_windows) if n_windows > 1 else None
+            bundle = self._extract_evidence_once(question, window, question_date, window=win)
+            if bundle is None or (not bundle.facts and bundle.status != "unsupported"):
+                # Retry once: parse failure, or a non-unsupported status with no facts.
+                bundle = self._extract_evidence_once(question, window, question_date, window=win)
+            if bundle is not None:
+                bundles.append(bundle)
+
+        if not bundles:
+            return empty
+        if len(bundles) == 1:
+            return bundles[0]
+
+        # Reduce: windows with nothing relevant tend to emit "the history does not mention X"
+        # pseudo-facts; drop those so they cannot contaminate the merged evidence.
+        merged_facts = _dedupe_facts(
+            [f for b in bundles for f in b.facts], MAX_MERGED_FACTS, drop_meta_negative=True
+        )
+        merged_reqs = _dedupe_facts([r for b in bundles for r in b.requirements], 8)
+        # Status: best supported window that actually produced facts wins.
+        status = "unsupported"
+        for b in bundles:
+            has_real_facts = any(not _is_meta_negative(f) for f in b.facts)
+            if has_real_facts and _STATUS_RANK[b.status] > _STATUS_RANK[status]:
+                status = b.status
+        if status == "unsupported" and merged_facts:
+            status = "inferable"
+        return EvidenceBundle(status, merged_facts, merged_reqs or ("Answer the question accurately.",))
 
     def answer_from_evidence(
         self,

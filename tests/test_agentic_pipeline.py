@@ -174,3 +174,92 @@ def test_as_of_recall_provider_configuration(monkeypatch):
     assert isinstance(p_off, CauraMemoryProvider)
     assert p_off.send_valid_at is False
 
+
+def test_split_context_windows_respects_chunk_boundaries():
+    from longmemeval.llm import _split_context_windows
+
+    chunks = [f"chunk-{i} " + ("x" * 1000) for i in range(10)]
+    context = "\n---\n".join(chunks)
+    windows = _split_context_windows(context, window_chars=3500)
+    assert len(windows) == 4  # 3 chunks per window (3*~1010 < 3500), last window has 1
+    # No chunk is split across windows
+    rejoined = "\n---\n".join(windows)
+    assert rejoined == context
+    for w in windows:
+        assert w.startswith("chunk-")
+
+
+class WindowAwareLLM(BaseLLM):
+    """Returns different facts depending on which window it sees; first call for window A is empty."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.window_a_calls = 0
+
+    def generate(self, prompt: str, **kwargs: Any) -> str:
+        self.calls += 1
+        if "EVENT-FEB-14" in prompt and "EVENT-FEB-15" not in prompt:
+            return json.dumps({"status": "direct", "facts": ["Feb 14: 24-Hour Bike Ride charity event."], "requirements": ["dates"]})
+        if "EVENT-FEB-15" in prompt:
+            self.window_a_calls += 1
+            if self.window_a_calls == 1:
+                # Simulate the observed failure: valid JSON, status claims support, but no facts
+                return json.dumps({"status": "inferable", "facts": [], "requirements": []})
+            return json.dumps({"status": "inferable", "facts": ["Feb 15: Books for Kids charity book drive.", "Feb 14: 24-Hour Bike Ride charity event."], "requirements": ["dates"]})
+        return json.dumps({"status": "unsupported", "facts": [], "requirements": []})
+
+
+def test_extract_evidence_map_reduce_merges_windows_and_retries_empty():
+    from longmemeval.llm import MAP_REDUCE_THRESHOLD_CHARS
+
+    filler = "y" * 60_000
+    chunk_a = "EVENT-FEB-14 " + filler
+    chunk_b = "EVENT-FEB-15 " + filler
+    chunk_c = "nothing relevant " + filler
+    context = "\n---\n".join([chunk_a, chunk_b, chunk_c])
+    assert len(context) > MAP_REDUCE_THRESHOLD_CHARS
+
+    llm = WindowAwareLLM()
+    bundle = llm.extract_evidence("How many months since two charity events on consecutive days?", context, "2023/04/18")
+
+    assert bundle.status == "direct"  # best supported window with facts wins
+    assert any("Feb 15" in f for f in bundle.facts)
+    assert any("Feb 14" in f for f in bundle.facts)
+    # Duplicate Feb 14 fact across windows is deduped
+    assert sum("Feb 14" in f for f in bundle.facts) == 1
+    # Window B was retried once after the empty-facts response
+    assert llm.window_a_calls == 2
+
+
+def test_map_reduce_drops_meta_negative_facts_and_passes_window_hint():
+    from longmemeval.llm import _is_meta_negative
+
+    assert _is_meta_negative("The retrieved chat history does not mention three completed road trips.")
+    assert _is_meta_negative("No record of Bandung or Cihampelas Walk in the history.")
+    assert not _is_meta_negative("On May 26, 2023, the user drove six hours to Washington D.C.")
+
+    class NoisyLLM(BaseLLM):
+        def __init__(self):
+            self.prompts = []
+
+        def generate(self, prompt, **kw):
+            self.prompts.append(prompt)
+            if "RELEVANT-CHUNK" in prompt:
+                return json.dumps({"status": "direct", "facts": ["The assistant recommended Miss Bee Providore."], "requirements": ["name"]})
+            return json.dumps({"status": "unsupported", "facts": ["The chat history does not mention any restaurant in Bandung."], "requirements": []})
+
+    filler = "z" * 70_000
+    context = "\n---\n".join(["irrelevant " + filler, "RELEVANT-CHUNK " + filler])
+    llm = NoisyLLM()
+    bundle = llm.extract_evidence("Remind me of the restaurant name?", context)
+    assert bundle.facts == ("The assistant recommended Miss Bee Providore.",)
+    assert bundle.status == "direct"
+    assert all("window 1 of 2" in p or "window 2 of 2" in p for p in llm.prompts)
+
+
+def test_extract_evidence_small_context_single_pass():
+    llm = DummyLLM(responses={"Select and extract factual evidence": json.dumps({"status": "direct", "facts": ["f1"], "requirements": []})})
+    bundle = llm.extract_evidence("q", "short context")
+    assert bundle.facts == ("f1",)
+    assert len(llm.call_history) == 1
+
