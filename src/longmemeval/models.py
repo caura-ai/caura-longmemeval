@@ -12,6 +12,7 @@ class EvidenceBundle:
     status: str  # "direct" | "inferable" | "unsupported"
     facts: tuple[str, ...]
     requirements: tuple[str, ...]
+    windows: int = 1  # >1 when the windowed (map-reduce) fallback produced this bundle
 
     def as_context(self) -> str:
         lines = [f"Support status: {self.status}"]

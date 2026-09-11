@@ -190,45 +190,65 @@ def test_split_context_windows_respects_chunk_boundaries():
 
 
 class WindowAwareLLM(BaseLLM):
-    """Returns different facts depending on which window it sees; first call for window A is empty."""
+    """Full-context passes fail (simulating the observed empty extraction); windows succeed."""
 
     def __init__(self) -> None:
-        self.calls = 0
-        self.window_a_calls = 0
+        self.full_calls = 0
+        self.window_b_calls = 0
 
     def generate(self, prompt: str, **kwargs: Any) -> str:
-        self.calls += 1
+        is_window = "window " in prompt and " of " in prompt
+        if not is_window:
+            self.full_calls += 1
+            # Observed failure mode: status claims support but facts are empty
+            return json.dumps({"status": "inferable", "facts": [], "requirements": []})
         if "EVENT-FEB-14" in prompt and "EVENT-FEB-15" not in prompt:
             return json.dumps({"status": "direct", "facts": ["Feb 14: 24-Hour Bike Ride charity event."], "requirements": ["dates"]})
         if "EVENT-FEB-15" in prompt:
-            self.window_a_calls += 1
-            if self.window_a_calls == 1:
-                # Simulate the observed failure: valid JSON, status claims support, but no facts
+            self.window_b_calls += 1
+            if self.window_b_calls == 1:
                 return json.dumps({"status": "inferable", "facts": [], "requirements": []})
             return json.dumps({"status": "inferable", "facts": ["Feb 15: Books for Kids charity book drive.", "Feb 14: 24-Hour Bike Ride charity event."], "requirements": ["dates"]})
         return json.dumps({"status": "unsupported", "facts": [], "requirements": []})
 
 
-def test_extract_evidence_map_reduce_merges_windows_and_retries_empty():
+def test_extract_evidence_falls_back_to_windows_when_single_pass_empty():
     from longmemeval.llm import MAP_REDUCE_THRESHOLD_CHARS
 
     filler = "y" * 60_000
-    chunk_a = "EVENT-FEB-14 " + filler
-    chunk_b = "EVENT-FEB-15 " + filler
-    chunk_c = "nothing relevant " + filler
-    context = "\n---\n".join([chunk_a, chunk_b, chunk_c])
+    context = "\n---\n".join(["EVENT-FEB-14 " + filler, "EVENT-FEB-15 " + filler, "nothing relevant " + filler])
     assert len(context) > MAP_REDUCE_THRESHOLD_CHARS
 
     llm = WindowAwareLLM()
     bundle = llm.extract_evidence("How many months since two charity events on consecutive days?", context, "2023/04/18")
 
-    assert bundle.status == "direct"  # best supported window with facts wins
+    assert llm.full_calls == 2  # single pass + one retry before escalating
+    assert bundle.status == "direct"
     assert any("Feb 15" in f for f in bundle.facts)
-    assert any("Feb 14" in f for f in bundle.facts)
-    # Duplicate Feb 14 fact across windows is deduped
-    assert sum("Feb 14" in f for f in bundle.facts) == 1
-    # Window B was retried once after the empty-facts response
-    assert llm.window_a_calls == 2
+    assert sum("Feb 14" in f for f in bundle.facts) == 1  # deduped across windows
+    assert llm.window_b_calls == 2  # empty window retried once
+
+
+def test_extract_evidence_single_pass_preferred_and_unsupported_trusted():
+    """Large context, single pass succeeds -> no windowing. Explicit unsupported -> no windowing."""
+    class CountingLLM(BaseLLM):
+        def __init__(self, payload):
+            self.payload = payload
+            self.calls = 0
+
+        def generate(self, prompt, **kw):
+            self.calls += 1
+            assert "window " not in prompt
+            return json.dumps(self.payload)
+
+    big = "\n---\n".join(["c" * 70_000] * 3)
+    ok = CountingLLM({"status": "direct", "facts": ["f1", "f2"], "requirements": []})
+    b = ok.extract_evidence("q", big)
+    assert b.facts == ("f1", "f2") and ok.calls == 1
+
+    abstain = CountingLLM({"status": "unsupported", "facts": [], "requirements": []})
+    b2 = abstain.extract_evidence("q", big)
+    assert b2.status == "unsupported" and b2.facts == () and abstain.calls == 1
 
 
 def test_map_reduce_drops_meta_negative_facts_and_passes_window_hint():
@@ -244,6 +264,9 @@ def test_map_reduce_drops_meta_negative_facts_and_passes_window_hint():
 
         def generate(self, prompt, **kw):
             self.prompts.append(prompt)
+            if "window " not in prompt:
+                # full-context pass fails -> forces the windowed fallback
+                return "not json"
             if "RELEVANT-CHUNK" in prompt:
                 return json.dumps({"status": "direct", "facts": ["The assistant recommended Miss Bee Providore."], "requirements": ["name"]})
             return json.dumps({"status": "unsupported", "facts": ["The chat history does not mention any restaurant in Bandung."], "requirements": []})
@@ -254,7 +277,8 @@ def test_map_reduce_drops_meta_negative_facts_and_passes_window_hint():
     bundle = llm.extract_evidence("Remind me of the restaurant name?", context)
     assert bundle.facts == ("The assistant recommended Miss Bee Providore.",)
     assert bundle.status == "direct"
-    assert all("window 1 of 2" in p or "window 2 of 2" in p for p in llm.prompts)
+    window_prompts = [p for p in llm.prompts if "window " in p]
+    assert window_prompts and all("window 1 of 2" in p or "window 2 of 2" in p for p in window_prompts)
 
 
 def test_extract_evidence_small_context_single_pass():

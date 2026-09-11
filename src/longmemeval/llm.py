@@ -134,20 +134,30 @@ class BaseLLM:
     ) -> EvidenceBundle:
         """Stage 1: Extract facts and classify support status.
 
-        Large contexts are read in windows (map) and merged (reduce) so that facts
-        in the middle of a 150-200k char context are not dropped. An empty
-        extraction on non-empty context is retried once before falling back.
+        Single-pass over the full context first (it keeps global context, which
+        per-window reading loses: a 500-question A/B showed map-reduce-by-default
+        cost ~6 points on multi-session/temporal). If the single pass yields no
+        facts (observed on 4-6% of >120k-char contexts), retry once, then fall
+        back to windowed extraction (map) with merged facts (reduce).
         """
         empty = EvidenceBundle("unsupported", (), ("Answer the question accurately.",))
         if not context.strip():
             return empty
 
-        windows = (
-            _split_context_windows(context)
-            if len(context) > MAP_REDUCE_THRESHOLD_CHARS
-            else [context]
-        )
+        single = self._extract_evidence_once(question, context, question_date)
+        inconsistent = single is not None and not single.facts and single.status != "unsupported"
+        if single is None or inconsistent:
+            single = self._extract_evidence_once(question, context, question_date)
+            inconsistent = single is not None and not single.facts and single.status != "unsupported"
+        # Trust an explicit "unsupported, no facts" verdict (abstention path unchanged from baseline).
+        # Only escalate to windowed reading when the pass failed or contradicted itself.
+        if single is not None and not inconsistent:
+            return single
+        if len(context) <= MAP_REDUCE_THRESHOLD_CHARS:
+            return single if single is not None else empty
 
+        # Fallback: windowed extraction for large contexts where the single pass came back empty.
+        windows = _split_context_windows(context)
         n_windows = len(windows)
         bundles: list[EvidenceBundle] = []
         for idx, window in enumerate(windows, start=1):
@@ -178,7 +188,9 @@ class BaseLLM:
                 status = b.status
         if status == "unsupported" and merged_facts:
             status = "inferable"
-        return EvidenceBundle(status, merged_facts, merged_reqs or ("Answer the question accurately.",))
+        return EvidenceBundle(
+            status, merged_facts, merged_reqs or ("Answer the question accurately.",), windows=n_windows
+        )
 
     def answer_from_evidence(
         self,
