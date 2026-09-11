@@ -143,7 +143,7 @@ Question: {query}
 
 Guidelines:
 - Provide a clear, direct, and factual answer based on the extracted facts.
-- Single-fact questions: if the question asks for ONE specific name, item, value, date, or place (e.g. "remind me of the name of...", "what was the...", "which ... did I..."), answer in a single sentence that states that value and nothing else. Do not add descriptions, features, menus, or other unrequested details; every extra claim is a chance to be wrong.
+- Explicit recall requests: ONLY when the question literally asks you to recall a stored name or value (phrasings like "remind me of the name of...", "what was the name of the...", "do you remember what ... was called"), answer in a single sentence stating that value in full (keep its complete title, link/URL, or identifier if one was given) and nothing else; do not add descriptions, features, menus, or other unrequested details. This rule does NOT apply to advice, recommendation, suggestion, yes/no, "how many", "how long", or "when" questions - answer those normally and completely.
 - Multi-part questions: include all key identifying details (e.g. names AND their roles/specialties, items AND their categories, destinations AND times) to make the answer fully complete.
 - If the question asks for a count or total ("How many..."), count every distinct instance or item listed in the facts and state the exact integer count directly (e.g. "You have led 2 projects: ..."). Do not state that the total is unknown if distinct instances are present in the facts.
 - If an entity, attribute, or state changed over time (e.g. job, salary, pre-approval amount, location, pet name), state the MOST RECENT / UPDATED value directly as the primary answer (you may optionally note previous values as historical context).
@@ -170,7 +170,7 @@ Guidelines:
 - For time calculations, compute the difference relative to the stated dates and the Current Date ({formatted_date}).
 - For updated information or changed states, ensure the latest chronological update is the primary answer.
 - For preference queries, directly utilize the user's personal interests, field of study, and constraints.
-- If the question asks for one specific name, item, value, date, or place, answer in a single sentence with that value only; no unrequested elaboration.
+- Only if the question literally asks to recall a stored name or value ("remind me of the name of...", "what was the name of..."), answer in a single sentence with that value only. Never apply this to advice, recommendation, yes/no, or counting/time questions.
 - If the premise is unsupported or no responsible inference is possible, answer: "You did not mention this information in the chat history."
 
 Answer:"""
@@ -195,7 +195,7 @@ Check:
 3. Personalization & Recommendations: If asked for recommendations, suggestions, or advice, ensure the answer delivers relevant suggestions that directly reflect the user's specific preferences, background field, and negative constraints from the evidence. Do NOT abstain on recommendation requests.
 4. Abstention vs Grounded Answers: If one of the candidates provides concrete historical details (e.g. specific dates like Feb 14/15, specific entity/restaurant names, or exact counts), prefer the candidate that answers with specific grounded details over a generic abstention. Only abstain if the information was genuinely never mentioned in the chat history.
 5. Directness: Keep the answer clear, complete, and direct.
-6. Terseness for single-fact questions: if the question asks for ONE specific name, item, value, date, or place, the final answer MUST be a single sentence stating that value and nothing else. Strip descriptions, features, menu details, and any other unrequested elaboration from the chosen candidate. Never list multiple alternative values to hedge.
+6. Explicit recall requests only: if the question literally asks to recall a stored name or value ("remind me of the name of...", "what was the name of the..."), the final answer should be a single sentence stating that value in full (never drop an associated title, link/URL, or identifier); strip unrequested descriptions and never list multiple alternative values to hedge. Do NOT shorten answers to advice, recommendation, suggestion, yes/no, counting, or time-calculation questions - those must stay complete.
 
 Question: {query}
 Current Date: {formatted_date}
