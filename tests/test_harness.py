@@ -71,7 +71,8 @@ def test_caura_category_adaptive_profiles():
     assert "temporal-reasoning" in CATEGORY_SEARCH_PROFILES
     assert CATEGORY_SEARCH_PROFILES["temporal-reasoning"]["top_k"] == 50
     assert CATEGORY_SEARCH_PROFILES["multi-session"]["top_k"] == 60
-    assert CATEGORY_SEARCH_PROFILES["single-session-preference"]["top_k"] == 15
+    assert CATEGORY_SEARCH_PROFILES["single-session-preference"]["top_k"] == 25
+    assert CATEGORY_SEARCH_PROFILES["knowledge-update"]["top_k"] == 45
 
     provider = CauraMemoryProvider(api_key="test_key", tenant_id="test_tenant")
     assert provider.category_adaptive is True

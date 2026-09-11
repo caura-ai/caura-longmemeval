@@ -92,16 +92,17 @@ Classify support status as:
 - unsupported: the memories do not contain the asked information, or the question asks about a person, event, pet, possession, or activity that was never mentioned in the history.
 
 Guidelines:
+- Exhaustive Scanning: Thoroughly scan the ENTIRE retrieved chat history from beginning to end. Gold evidence may appear across multiple distinct sessions spaced throughout the text.
 - Dates & Chronology: Note timestamps and session dates whenever mentioned.
 - Assistant Recall: The question may ask what the assistant previously recommended, suggested, or answered (e.g. restaurant recommendations, movie lists, advice). Search BOTH assistant and user messages in the chat history to extract any recommendations or advice provided by the assistant.
-- Multi-Event & Temporal Reasoning: When a question asks about events meeting a chronological condition (e.g. "on consecutive days", "within a week", "before X", "after Y"), extract all candidate events of that type (e.g. all charity events, bike rides, trips) with their exact dates and timestamps so that temporal sequences and elapsed time can be calculated. Do not expect the chat text to use the literal words "consecutive days".
-- Knowledge Updates: If an item, attribute, number, or state changed over time (e.g. mortgage pre-approval, salary, job, pet name), clearly identify the LATEST chronological state as the current active fact, and specify in requirements that the latest value is the answer.
+- Multi-Event & Temporal Reasoning: When a question asks about events meeting a chronological condition (e.g. "on consecutive days", "within a week", "before X", "after Y"), extract ALL candidate events of that type across all sessions with their explicit dates and timestamps so that sequences and elapsed time can be verified. For "consecutive days", specifically check for any events that occurred on adjacent calendar dates (e.g. Day 1 and Day 2). Do not expect the chat text to use the literal words "consecutive days".
+- Knowledge Updates & Relocations: If an entity, attribute, number, or location changed over time (e.g. someone moved to Chicago, then later relocated to the suburbs; or mortgage pre-approval changed), extract BOTH earlier and LATEST values with their dates, and clearly identify the LATEST chronological state as the current active fact.
 - Contextual Associations & Locations: If asked where an action occurred or where an item was bought/redeemed, and the event is discussed within a conversation centered around a specific retailer, store, or venue (e.g. Target, Cartwheel), note that store as the contextual location.
 - User Preferences & Recommendations: When the user asks for recommendations, suggestions, or advice (e.g. "Can you suggest a hotel...", "Can you recommend activities...", "Any advice on slow cooker recipes..."), this is a personalization request. ALWAYS classify as "inferable" (or "direct"). Extract the user's specific past experiences, successes (e.g. beef stew, making yogurt), preferences, and constraints, and explicitly list them in requirements so the response incorporates them. NEVER classify recommendation requests as "unsupported".
-- Aggregation & Counting: If the question asks for a count (e.g. "How many [projects/items/plants/hours/days]..."), the user is asking how many instances they mentioned in their history chats. Classify as "inferable", list every distinct mentioned instance as a separate fact, and require summing them into an exact count.
+- Aggregation & Counting: If the question asks for a count (e.g. "How many [projects/items/plants/hours/days]..."), the user is asking how many instances they mentioned in their history chats. Classify as "inferable", list every distinct mentioned instance as a separate fact, and require summing them into an exact count. Carefully distinguish distinct named projects/items from ongoing general duties within a project.
 - Never invent facts, dates, names, or items that are absent from the text.
 - Do not include meta-statements in facts (e.g. do NOT write "the history does not specify total count"). Only extract concrete positive events, statements, preferences, and actions.
-- Return at most 12 concise, factual bullet points.
+- Return at most 15 concise, factual bullet points.
 
 Current Date: {formatted_date}
 Question: {query}

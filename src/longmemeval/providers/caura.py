@@ -44,19 +44,19 @@ CATEGORY_SEARCH_PROFILES: dict[str, dict[str, int]] = {
         "multiquery": 2,
     },
     "knowledge-update": {
-        "top_k": 30,
-        "merge_top_k": 35,
-        "multiquery": 2,
+        "top_k": 45,
+        "merge_top_k": 50,
+        "multiquery": 3,
     },
     "single-session-user": {
-        "top_k": 20,
-        "merge_top_k": 20,
+        "top_k": 25,
+        "merge_top_k": 25,
         "multiquery": 1,
     },
     "single-session-preference": {
-        "top_k": 15,
-        "merge_top_k": 15,
-        "multiquery": 1,
+        "top_k": 25,
+        "merge_top_k": 30,
+        "multiquery": 2,
     },
 }
 
@@ -465,11 +465,28 @@ class CauraMemoryProvider(BaseMemoryProvider):
                 if w.lower() not in _QUERY_STOPWORDS and len(w) > 2
             ]
             if content_words:
-                queries.append(" ".join(content_words[:30]))
-        if target_multiquery > 2:
+                kw_query = " ".join(content_words[:30])
+                if kw_query not in queries:
+                    queries.append(kw_query)
+
+            # Extract capitalized named entities (e.g. "Rachel", "Chicago", "Target")
+            proper_nouns = [
+                w for w in re.findall(r"\b[A-Z][a-z0-9'-]+\b", query)
+                if w.lower() not in _QUERY_STOPWORDS and len(w) > 1
+            ]
+            if proper_nouns and len(queries) < target_multiquery:
+                entity_query = " ".join(proper_nouns)
+                if entity_query not in queries:
+                    queries.append(entity_query)
+
+        if target_multiquery > len(queries):
             all_words = [w for w in re.findall(r"[A-Za-z0-9'\-]+", query) if len(w) > 2]
-            if all_words and all_words != content_words:
-                queries.append(" ".join(all_words[:30]))
+            if all_words:
+                broad_query = " ".join(all_words[:30])
+                if broad_query not in queries:
+                    queries.append(broad_query)
+
+        queries = queries[:target_multiquery]
 
         # LongMemEval's question_date is "2023/05/20 (Sat) 02:21"-shaped; the
         # dataset module already knows how to read it. Unparseable → no valid_at.
