@@ -16,11 +16,75 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=T
 from .dataset import LongMemEvalDataset, QUESTION_TYPES, download_dataset
 from .llm import get_llm
 from .providers import get_memory_provider, PROVIDERS
-from .runner import BenchmarkRunner, Evaluator, run_reader_pipeline
+from .runner import (
+    DEFAULT_PRIMARY_JUDGE,
+    DEFAULT_SECONDARY_JUDGE,
+    JUDGE_PROTOCOL,
+    BenchmarkRunner,
+    Evaluator,
+    run_reader_pipeline,
+)
+from .report import secondary_eval_filename, summarize_secondary
 from .models import HypothesisEntry
 
 app = typer.Typer(help="LongMemEval benchmark harness for Caura.ai")
 console = Console()
+
+
+def resolve_judges(
+    judge_llm: str | None,
+    judge_model: str | None,
+    secondary_judge_llm: str | None,
+    secondary_judge_model: str | None,
+    no_secondary: bool,
+) -> tuple[tuple[str, str], tuple[str, str] | None]:
+    """Judge protocol: primary = headline (default gpt-4o, the LongMemEval reference judge);
+    secondary = strict development judge (default gemini-3.5-flash-lite), always run beside the primary.
+
+    Resolution order for each slot: CLI flag > JUDGE_LLM/JUDGE_MODEL (SECONDARY_JUDGE_LLM/SECONDARY_JUDGE_MODEL)
+    env > protocol default. A model given without a provider inherits the default provider for that slot.
+    """
+    p_llm = judge_llm or os.environ.get("JUDGE_LLM") or DEFAULT_PRIMARY_JUDGE[0]
+    p_model = judge_model or os.environ.get("JUDGE_MODEL") or (DEFAULT_PRIMARY_JUDGE[1] if p_llm == DEFAULT_PRIMARY_JUDGE[0] else None)
+    primary = (p_llm, p_model)
+    if no_secondary:
+        return primary, None
+    s_llm = secondary_judge_llm or os.environ.get("SECONDARY_JUDGE_LLM") or DEFAULT_SECONDARY_JUDGE[0]
+    s_model = secondary_judge_model or os.environ.get("SECONDARY_JUDGE_MODEL") or (DEFAULT_SECONDARY_JUDGE[1] if s_llm == DEFAULT_SECONDARY_JUDGE[0] else None)
+    secondary = (s_llm, s_model)
+    if secondary == primary:
+        return primary, None
+    return primary, secondary
+
+
+def build_judges(
+    judge_llm: str | None,
+    judge_model: str | None,
+    secondary_judge_llm: str | None,
+    secondary_judge_model: str | None,
+    no_secondary: bool,
+):
+    primary, secondary = resolve_judges(judge_llm, judge_model, secondary_judge_llm, secondary_judge_model, no_secondary)
+    primary_llm = get_llm(provider=primary[0], model=primary[1])
+    secondary_llm = None
+    if secondary is not None:
+        try:
+            secondary_llm = get_llm(provider=secondary[0], model=secondary[1])
+        except Exception as exc:  # missing key for the secondary provider must not block the run
+            console.print(f"[yellow]Secondary judge {secondary[0]}:{secondary[1]} unavailable ({str(exc)[:120]}); running primary only[/yellow]")
+    console.print(
+        f"[dim]Judges: primary {getattr(primary_llm, 'model_name', primary[1])}"
+        + (f", secondary {getattr(secondary_llm, 'model_name', secondary[1])}" if secondary_llm else ", no secondary")
+        + "[/dim]"
+    )
+    return primary_llm, secondary_llm
+
+
+JUDGE_HELP = "Primary judge provider (headline): gemini | openai | grok. Default gpt-4o via openai (LongMemEval reference judge)"
+JUDGE_MODEL_HELP = "Primary judge model name"
+SECONDARY_JUDGE_HELP = "Secondary judge provider (reported beside the primary, never instead). Default gemini-3.5-flash-lite"
+SECONDARY_JUDGE_MODEL_HELP = "Secondary judge model name"
+NO_SECONDARY_HELP = "Run the primary judge only"
 
 
 @app.command()
@@ -47,8 +111,11 @@ def run(
     run_name: Optional[str] = typer.Option(None, "--name", help="Custom name for the run output directory"),
     reader_llm: str = typer.Option("gemini", "--reader", help="LLM for answering: gemini | openai | grok"),
     reader_model: Optional[str] = typer.Option(None, "--reader-model", help="Model name for reader LLM"),
-    judge_llm: str = typer.Option("gemini", "--judge", help="LLM for judging: gemini | openai | grok"),
-    judge_model: Optional[str] = typer.Option(None, "--judge-model", help="Model name for judge LLM"),
+    judge_llm: Optional[str] = typer.Option(None, "--judge", help=JUDGE_HELP),
+    judge_model: Optional[str] = typer.Option(None, "--judge-model", help=JUDGE_MODEL_HELP),
+    secondary_judge_llm: Optional[str] = typer.Option(None, "--secondary-judge", help=SECONDARY_JUDGE_HELP),
+    secondary_judge_model: Optional[str] = typer.Option(None, "--secondary-judge-model", help=SECONDARY_JUDGE_MODEL_HELP),
+    no_secondary_judge: bool = typer.Option(False, "--no-secondary-judge", help=NO_SECONDARY_HELP),
     skip_ingest: bool = typer.Option(False, "--skip-ingest", help="Skip document ingestion (use existing store)"),
     top_k: Optional[int] = typer.Option(None, "--top-k", "-k", help="Retrieval top_k (max 200 for Caura). Default: provider profile (chars mode 20 + category profiles; turns mode flat 50)"),
     as_of_recall: bool = typer.Option(True, "--as-of-recall/--no-as-of-recall", help="Enable As-Of Recall: anchor temporal ranking and valid_at at question_date"),
@@ -85,7 +152,7 @@ def run(
         provider_kwargs["bulk_size"] = bulk_size
     mem_provider = get_memory_provider(provider, **provider_kwargs)
     reader = get_llm(provider=reader_llm, model=reader_model or os.environ.get("READER_MODEL"))
-    judge = get_llm(provider=judge_llm, model=judge_model or os.environ.get("JUDGE_MODEL"))
+    judge, secondary_judge = build_judges(judge_llm, judge_model, secondary_judge_llm, secondary_judge_model, no_secondary_judge)
 
     excluded_ids: set[str] = set()
     if exclude_results:
@@ -101,6 +168,7 @@ def run(
         reader_llm=reader,
         judge_llm=judge,
         output_dir=output_dir,
+        secondary_judge_llm=secondary_judge,
     )
 
     try:
@@ -210,8 +278,11 @@ def rerun_pipeline(
     pipeline: str = typer.Option("agentic-v1", "--pipeline", help="Pipeline architecture: direct | agentic-v1"),
     reader_llm: str = typer.Option("gemini", "--reader", help="LLM for answering: gemini | openai | grok"),
     reader_model: Optional[str] = typer.Option(None, "--reader-model", help="Model name for reader LLM"),
-    judge_llm: str = typer.Option("gemini", "--judge", help="LLM for judging: gemini | openai | grok"),
-    judge_model: Optional[str] = typer.Option(None, "--judge-model", help="Model name for judge LLM"),
+    judge_llm: Optional[str] = typer.Option(None, "--judge", help=JUDGE_HELP),
+    judge_model: Optional[str] = typer.Option(None, "--judge-model", help=JUDGE_MODEL_HELP),
+    secondary_judge_llm: Optional[str] = typer.Option(None, "--secondary-judge", help=SECONDARY_JUDGE_HELP),
+    secondary_judge_model: Optional[str] = typer.Option(None, "--secondary-judge-model", help=SECONDARY_JUDGE_MODEL_HELP),
+    no_secondary_judge: bool = typer.Option(False, "--no-secondary-judge", help=NO_SECONDARY_HELP),
     concurrency: int = typer.Option(5, "--concurrency", "-c", help="Concurrent workers for reader and judge LLMs"),
     output_dir: Path = typer.Option(Path("outputs"), "--output-dir", "-o", help="Directory for benchmark outputs"),
     data_path: Optional[Path] = typer.Option(None, "--data-path", help="Local path to longmemeval_s_cleaned.json"),
@@ -231,7 +302,7 @@ def rerun_pipeline(
     items_by_id = {item.question_id: item for item in ds.load_items()}
 
     reader = get_llm(provider=reader_llm, model=reader_model or os.environ.get("READER_MODEL"))
-    judge = get_llm(provider=judge_llm, model=judge_model or os.environ.get("JUDGE_MODEL"))
+    judge, secondary_judge = build_judges(judge_llm, judge_model, secondary_judge_llm, secondary_judge_model, no_secondary_judge)
 
     # Load source hypotheses and deduplicate by question_id
     hypos_dict: dict[str, HypothesisEntry] = {}
@@ -309,7 +380,8 @@ def rerun_pipeline(
 
     finish_time = datetime.now(timezone.utc)
 
-    console.print("\n[bold]Evaluating with judge LLM...[/bold]")
+    judge_name = getattr(judge, "model_name", "unknown")
+    console.print(f"\n[bold]Evaluating with primary judge ({judge_name})...[/bold]")
     evaluator = Evaluator(judge_llm=judge)
     eval_path = out_run_dir / "eval_results.json"
     eval_summary = evaluator.evaluate(
@@ -318,16 +390,38 @@ def rerun_pipeline(
         out_eval_path=eval_path,
         concurrency=concurrency,
     )
+    secondary_block = None
+    secondary_name = None
+    if secondary_judge is not None:
+        secondary_name = getattr(secondary_judge, "model_name", "unknown")
+        console.print(f"[bold]Evaluating with secondary judge ({secondary_name})...[/bold]")
+        secondary_path = out_run_dir / secondary_eval_filename(secondary_name)
+        try:
+            secondary_summary = Evaluator(judge_llm=secondary_judge).evaluate(
+                hypotheses=new_hypotheses,
+                items=list(items_by_id.values()),
+                out_eval_path=secondary_path,
+                concurrency=concurrency,
+            )
+            secondary_block = summarize_secondary(secondary_name, secondary_path.name, eval_summary, secondary_summary)
+            console.print(
+                f"[dim]{judge_name}: {eval_summary['correct_questions']}/{eval_summary['total_questions']}  |  "
+                f"{secondary_name}: {secondary_summary['correct_questions']}/{secondary_summary['total_questions']}  |  "
+                f"agreement {secondary_block['agreement_with_primary']}[/dim]"
+            )
+        except Exception as exc:
+            console.print(f"[yellow]Secondary judge failed: {str(exc)[:200]}[/yellow]")
 
     # Save run metadata and results.json
     reader_name = f"{reader.__class__.__name__}:{getattr(reader, 'model_name', getattr(reader, 'model', 'default'))}"
-    judge_name = f"{judge.__class__.__name__}:{getattr(judge, 'model_name', getattr(judge, 'model', 'default'))}"
 
     run_meta = {
         "name": run_name,
         "pipeline": pipeline,
         "reader": reader_name,
         "judge": judge_name,
+        "judge_secondary": secondary_name,
+        "judge_protocol": JUDGE_PROTOCOL,
         "started_at": start_time.isoformat(),
         "finished_at": finish_time.isoformat(),
         "duration_seconds": (finish_time - start_time).total_seconds(),
@@ -338,11 +432,15 @@ def rerun_pipeline(
                 "pipeline": pipeline,
                 "reader": reader_name,
                 "judge": judge_name,
+                "judge_secondary": secondary_name,
             },
         },
     }
+    payload: dict = {"run": run_meta, "summary": eval_summary}
+    if secondary_block is not None:
+        payload["secondary_evaluation"] = secondary_block
     with open(out_run_dir / "results.json", "w", encoding="utf-8") as f_res:
-        json.dump({"run": run_meta, "summary": eval_summary}, f_res, indent=2, ensure_ascii=False)
+        json.dump(payload, f_res, indent=2, ensure_ascii=False)
 
     if generate_html:
         try:
@@ -356,12 +454,20 @@ def rerun_pipeline(
 def evaluate_hypotheses(
     hypotheses_path: Path = typer.Argument(..., help="Path to hypotheses.jsonl file"),
     data_path: Optional[Path] = typer.Option(None, "--data-path", help="Path to reference longmemeval_s_cleaned.json"),
-    judge_llm: str = typer.Option("gemini", "--judge", help="Judge provider: gemini | openai | grok"),
-    judge_model: Optional[str] = typer.Option(None, "--judge-model", help="Model name for judge LLM"),
-    output_path: Optional[Path] = typer.Option(None, "--output", "-o", help="Path to write eval_results.json"),
+    judge_llm: Optional[str] = typer.Option(None, "--judge", help=JUDGE_HELP),
+    judge_model: Optional[str] = typer.Option(None, "--judge-model", help=JUDGE_MODEL_HELP),
+    secondary_judge_llm: Optional[str] = typer.Option(None, "--secondary-judge", help=SECONDARY_JUDGE_HELP),
+    secondary_judge_model: Optional[str] = typer.Option(None, "--secondary-judge-model", help=SECONDARY_JUDGE_MODEL_HELP),
+    no_secondary_judge: bool = typer.Option(False, "--no-secondary-judge", help=NO_SECONDARY_HELP + " (implied when --output is given)"),
+    output_path: Optional[Path] = typer.Option(None, "--output", "-o", help="Path to write eval_results.json (single-judge mode)"),
+    concurrency: int = typer.Option(5, "--concurrency", "-c", help="Concurrent judge calls"),
     generate_html: bool = typer.Option(True, "--html/--no-html", help="Generate HTML benchmark report"),
 ):
-    """Evaluate an existing hypothesis file against ground truth without running ingestion/retrieval."""
+    """Evaluate an existing hypothesis file against ground truth without running ingestion/retrieval.
+
+    Default writes eval_results.json (primary judge) and eval_results_<secondary>.json next to the hypotheses.
+    With --output only the primary judge runs and its verdicts go to that path (for ad-hoc judge comparisons).
+    """
     import json
     from .report import generate_report_for_run
 
@@ -374,10 +480,34 @@ def evaluate_hypotheses(
             if line.strip():
                 hypotheses.append(HypothesisEntry.model_validate(json.loads(line)))
 
-    judge = get_llm(provider=judge_llm, model=judge_model or os.environ.get("JUDGE_MODEL"))
-    evaluator = Evaluator(judge_llm=judge)
+    single = no_secondary_judge or output_path is not None
+    judge, secondary_judge = build_judges(judge_llm, judge_model, secondary_judge_llm, secondary_judge_model, single)
     eval_target = output_path or (hypotheses_path.parent / "eval_results.json")
-    summary = evaluator.evaluate(hypotheses, items, out_eval_path=eval_target)
+    summary = Evaluator(judge_llm=judge).evaluate(hypotheses, items, out_eval_path=eval_target, concurrency=concurrency)
+    console.print(f"{getattr(judge, 'model_name', 'primary')}: {summary['correct_questions']}/{summary['total_questions']} ({summary['overall_accuracy']:.1%})")
+
+    if secondary_judge is not None:
+        secondary_name = getattr(secondary_judge, "model_name", "unknown")
+        secondary_path = hypotheses_path.parent / secondary_eval_filename(secondary_name)
+        try:
+            s2 = Evaluator(judge_llm=secondary_judge).evaluate(hypotheses, items, out_eval_path=secondary_path, concurrency=concurrency)
+            block = summarize_secondary(secondary_name, secondary_path.name, summary, s2)
+            console.print(
+                f"{secondary_name}: {s2['correct_questions']}/{s2['total_questions']} ({s2['overall_accuracy']:.1%})  |  "
+                f"agreement with primary {block['agreement_with_primary']}/{summary['total_questions']}"
+            )
+            results_json = hypotheses_path.parent / "results.json"
+            if results_json.exists():
+                try:
+                    payload = json.loads(results_json.read_text(encoding="utf-8"))
+                    payload["secondary_evaluation"] = block
+                    payload.setdefault("run", {})["judge_secondary"] = secondary_name
+                    payload["run"]["judge_protocol"] = JUDGE_PROTOCOL
+                    results_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                except Exception as exc:
+                    console.print(f"[yellow]Could not update results.json with secondary evaluation: {exc}[/yellow]")
+        except Exception as exc:
+            console.print(f"[yellow]Secondary judge failed: {str(exc)[:200]}[/yellow]")
 
     if generate_html and eval_target:
         try:

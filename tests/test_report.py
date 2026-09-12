@@ -8,6 +8,8 @@ from longmemeval.report import (
     build_report_payload,
     render_report,
     generate_report_for_run,
+    secondary_eval_filename,
+    summarize_secondary,
 )
 
 
@@ -161,3 +163,72 @@ def test_generate_report_for_existing_run(tmp_path: Path):
     assert out_report.exists()
     assert (run_dir / "results.json").exists()
     assert (run_dir / "report.html").exists()
+
+
+def _eval(results: list[tuple[str, str, bool]], judge: str) -> dict:
+    by_type: dict[str, dict] = {}
+    for qid, qt, ok in results:
+        d = by_type.setdefault(qt, {"accuracy": 0.0, "total": 0, "correct": 0})
+        d["total"] += 1
+        d["correct"] += int(ok)
+    for d in by_type.values():
+        d["accuracy"] = d["correct"] / d["total"]
+    return {
+        "overall_accuracy": sum(ok for *_, ok in results) / len(results),
+        "total_questions": len(results),
+        "correct_questions": sum(ok for *_, ok in results),
+        "by_question_type": by_type,
+        "results": [
+            {"question_id": q, "question": "q", "gold_answer": "g", "hypothesis": "h", "question_type": qt,
+             "correct": ok, "judge_reason": "yes" if ok else "no", "judge_model": judge}
+            for q, qt, ok in results
+        ],
+    }
+
+
+def test_secondary_eval_filename_slug():
+    assert secondary_eval_filename("gemini-3.5-flash-lite") == "eval_results_gemini35flashlite.json"
+    assert secondary_eval_filename("gpt-4o") == "eval_results_gpt4o.json"
+    assert secondary_eval_filename("GPT-5.6 Terra") == "eval_results_gpt56terra.json"
+
+
+def test_summarize_secondary_agreement_and_flips():
+    primary = _eval([("a", "t", True), ("b", "t", True), ("c", "m", False), ("d", "m", False)], "gpt-4o")
+    secondary = _eval([("a", "t", True), ("b", "t", False), ("c", "m", True), ("d", "m", False)], "flash-lite")
+    block = summarize_secondary("flash-lite", "eval_results_flashlite.json", primary, secondary)
+    assert block["judge"] == "flash-lite"
+    assert block["correct_questions"] == 2
+    assert block["agreement_with_primary"] == 2
+    assert block["primary_only_correct"] == ["b"]
+    assert block["secondary_only_correct"] == ["c"]
+    assert block["by_question_type"]["t"]["correct"] == 1
+
+
+def test_generate_report_carries_secondary_judge(tmp_path: Path):
+    run_dir = tmp_path / "dual-judge-run"
+    run_dir.mkdir()
+    primary = _eval([("a", "temporal-reasoning", True), ("b", "multi-session", False)], "gpt-4o")
+    secondary = _eval([("a", "temporal-reasoning", False), ("b", "multi-session", False)], "gemini-3.5-flash-lite")
+    (run_dir / "eval_results.json").write_text(json.dumps(primary), encoding="utf-8")
+    (run_dir / "eval_results_gemini35flashlite.json").write_text(json.dumps(secondary), encoding="utf-8")
+    (run_dir / "hypotheses.jsonl").write_text(
+        "\n".join(json.dumps({"question_id": q, "hypothesis": "h", "context": "c", "retrieve_time_ms": 1, "generate_time_ms": 1}) for q in "ab") + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "results.json").write_text(
+        json.dumps({"run": {"name": "dual-judge-run", "judge": "gpt-4o", "judge_secondary": "gemini-3.5-flash-lite"}}),
+        encoding="utf-8",
+    )
+
+    generate_report_for_run(run_dir)
+
+    saved = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
+    sec = saved["secondary_evaluation"]
+    assert sec["judge"] == "gemini-3.5-flash-lite"
+    assert sec["file"] == "eval_results_gemini35flashlite.json"
+    assert sec["correct_questions"] == 0
+    assert sec["agreement_with_primary"] == 1
+    # Headline stays the primary judge's number.
+    assert saved["summary"]["correct_questions"] == 1
+    html = (run_dir / "report.html").read_text(encoding="utf-8")
+    assert '"secondary_evaluation"' in html

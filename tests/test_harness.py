@@ -179,3 +179,36 @@ def test_sibling_expansion_completes_best_ranked_sessions_within_budget(monkeypa
     ids = set(s["id"] for s in selected)
     assert "a1" in ids and "a2" not in ids
     assert {"b0", "b1", "b2", "c0", "c1"} <= ids
+
+
+def test_judge_protocol_defaults_and_overrides(monkeypatch):
+    from longmemeval.cli import resolve_judges
+
+    for k in ("JUDGE_LLM", "JUDGE_MODEL", "SECONDARY_JUDGE_LLM", "SECONDARY_JUDGE_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+
+    # Protocol default: gpt-4o headline, flash-lite secondary.
+    primary, secondary = resolve_judges(None, None, None, None, no_secondary=False)
+    assert primary == ("openai", "gpt-4o")
+    assert secondary == ("gemini", "gemini-3.5-flash-lite")
+
+    # --no-secondary-judge drops the secondary only.
+    assert resolve_judges(None, None, None, None, no_secondary=True) == (("openai", "gpt-4o"), None)
+
+    # Env pins both slots (what .env does); CLI flags beat env.
+    monkeypatch.setenv("JUDGE_LLM", "openai")
+    monkeypatch.setenv("JUDGE_MODEL", "gpt-4o")
+    monkeypatch.setenv("SECONDARY_JUDGE_LLM", "gemini")
+    monkeypatch.setenv("SECONDARY_JUDGE_MODEL", "gemini-3.5-flash-lite")
+    primary, secondary = resolve_judges("openai", "gpt-5.6-terra", None, None, no_secondary=False)
+    assert primary == ("openai", "gpt-5.6-terra")
+    assert secondary == ("gemini", "gemini-3.5-flash-lite")
+
+    # A judge study that makes primary == secondary collapses to a single judge instead of judging twice.
+    primary, secondary = resolve_judges("gemini", "gemini-3.5-flash-lite", None, None, no_secondary=False)
+    assert primary == ("gemini", "gemini-3.5-flash-lite") and secondary is None
+
+    # Provider switched without a model -> provider default, not the other slot's model.
+    monkeypatch.delenv("JUDGE_MODEL")
+    primary, _ = resolve_judges("gemini", None, None, None, no_secondary=True)
+    assert primary == ("gemini", None)

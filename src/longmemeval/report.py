@@ -95,6 +95,32 @@ def compute_quantiles(values: list[float]) -> dict[str, float]:
     }
 
 
+def secondary_eval_filename(model_name: str) -> str:
+    """eval_results_<slug>.json, e.g. gemini-3.5-flash-lite -> eval_results_gemini35flashlite.json."""
+    slug = re.sub(r"[^a-z0-9]+", "", model_name.lower()) or "secondary"
+    return f"eval_results_{slug}.json"
+
+
+def summarize_secondary(
+    judge_name: str, file_name: str, primary: dict[str, Any], secondary: dict[str, Any]
+) -> dict[str, Any]:
+    """Compact secondary-judge block for results.json: totals, per-type, and agreement with the primary judge."""
+    p = {r["question_id"]: bool(r["correct"]) for r in primary.get("results", [])}
+    s = {r["question_id"]: bool(r["correct"]) for r in secondary.get("results", [])}
+    common = [q for q in p if q in s]
+    return {
+        "judge": judge_name,
+        "file": file_name,
+        "overall_accuracy": secondary.get("overall_accuracy", 0.0),
+        "correct_questions": secondary.get("correct_questions", 0),
+        "total_questions": secondary.get("total_questions", 0),
+        "by_question_type": secondary.get("by_question_type", {}),
+        "agreement_with_primary": sum(1 for q in common if p[q] == s[q]),
+        "primary_only_correct": sorted(q for q in common if p[q] and not s[q]),
+        "secondary_only_correct": sorted(q for q in common if s[q] and not p[q]),
+    }
+
+
 def build_report_payload(
     run_meta: dict[str, Any],
     summary: dict[str, Any],
@@ -296,11 +322,13 @@ def generate_report_for_run(
 
     # If results.json already has run info, merge it
     results_json = run_dir / "results.json"
+    saved_secondary: dict[str, Any] | None = None
     if results_json.exists():
         try:
             saved_res = json.loads(results_json.read_text(encoding="utf-8"))
             if "run" in saved_res:
                 run_meta.update(saved_res["run"])
+            saved_secondary = saved_res.get("secondary_evaluation")
         except Exception:
             pass
 
@@ -332,6 +360,21 @@ def generate_report_for_run(
                 run_meta.setdefault("parameters", {}).setdefault("generation", {})["pipeline"] = pipe
 
     payload = build_report_payload(run_meta, eval_data, hypos)
+
+    # Secondary judge: recompute from its verdict file when present (fresh agreement numbers),
+    # otherwise keep whatever results.json already carried.
+    secondary_block = saved_secondary
+    sec_name = run_meta.get("judge_secondary") or (saved_secondary or {}).get("judge")
+    if sec_name:
+        sec_path = run_dir / secondary_eval_filename(sec_name)
+        if sec_path.exists() and sec_path != eval_path:
+            try:
+                sec_data = json.loads(sec_path.read_text(encoding="utf-8"))
+                secondary_block = summarize_secondary(sec_name, sec_path.name, eval_data, sec_data)
+            except Exception:
+                pass
+    if secondary_block:
+        payload["secondary_evaluation"] = secondary_block
 
     # Save enriched results.json
     results_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1355,6 +1398,7 @@ const retParams = params.retrieval || {};
 const genParams = params.generation || {};
 const summary = data.summary || {};
 const questions = data.questions || [];
+const secondary = data.secondary_evaluation || null;
 
 const categoryMeta = {
   'single-session-user': { color: '#67d391', label: 'User Recall', desc: 'Recall user-stated facts' },
@@ -1389,7 +1433,7 @@ document.querySelector('#run-chips').innerHTML = `
   ${(retParams.as_of_recall || retParams.valid_at || run.as_of_recall) ? `<span class="chip" style="border-color:#38bdf8;">Clock: <strong style="color:#38bdf8;">As-Of Recall</strong></span>` : ''}
   ${(run.pipeline || genParams.pipeline || params.pipeline) ? `<span class="chip">Pipeline: <strong style="color:#a78bfa;">${h(run.pipeline || genParams.pipeline || params.pipeline)}</strong></span>` : ''}
   <span class="chip">Reader: <strong>${h(run.reader || genParams.reader || 'default')}</strong></span>
-  <span class="chip">Judge: <strong>${h(run.judge || genParams.judge || 'default')}</strong></span>
+  <span class="chip">Judge: <strong>${h(run.judge || genParams.judge || 'default')}</strong>${secondary ? ` <span style="color:var(--muted);">/ ${h(secondary.judge)}</span>` : ''}</span>
   <span class="chip">Top-k: <strong>${h(topKDisplay)}</strong></span>
 `;
 
@@ -1427,8 +1471,9 @@ const paramGroups = [
     title: 'Models & Execution',
     items: [
       ['Reader LLM', h(run.reader || genParams.reader || 'gemini-3.8-flash')],
-      ['Judge LLM', h(run.judge || genParams.judge || 'gemini-3.5-flash-lite')],
-      ['Judge Protocol', 'Official LongMemEval binary judge'],
+      ['Judge LLM (primary, headline)', h(run.judge || genParams.judge || 'gpt-4o')],
+      ...(secondary ? [['Judge LLM (secondary)', `${h(secondary.judge)} · ${secondary.correct_questions}/${secondary.total_questions} (${pct(secondary.overall_accuracy)}) · agrees on ${secondary.agreement_with_primary}/${summary.total_questions}`]] : []),
+      ['Judge Protocol', run.judge_protocol || 'Official LongMemEval binary judge prompts'],
       ['Completed', run.finished_at ? new Date(run.finished_at).toLocaleString() : 'Not recorded']
     ]
   }
@@ -1461,13 +1506,19 @@ const metrics = [
     valColor: 'var(--emerald)',
     glow: 'var(--emerald)'
   },
-  {
+  ...(secondary ? [{
+    label: `Secondary Judge · ${secondary.judge}`,
+    value: pct(secondary.overall_accuracy),
+    sub: `${secondary.correct_questions || 0} of ${secondary.total_questions || 0} · agrees with primary on ${secondary.agreement_with_primary}/${summary.total_questions || 0}`,
+    valColor: 'var(--cyan)',
+    glow: 'var(--cyan)'
+  }] : [{
     label: 'Projected Official',
     value: pct(summary.projected_official_accuracy),
     sub: 'Reweighted to 500-item mix',
     valColor: 'var(--cyan)',
     glow: 'var(--cyan)'
-  },
+  }]),
   {
     label: 'Retrieval Latency (p95)',
     value: ms(ret.p95),
@@ -1520,7 +1571,7 @@ document.querySelector('#bars').innerHTML = catEntries.map(([cat, stats]) => {
       </div>
       <div class="bar-score">
         <div>${pct(acc)}</div>
-        <div class="bar-counts">${stats.correct}/${stats.total} correct</div>
+        <div class="bar-counts">${stats.correct}/${stats.total} correct${(secondary && secondary.by_question_type && secondary.by_question_type[cat]) ? ` · ${secondary.by_question_type[cat].correct}/${secondary.by_question_type[cat].total} (${h(secondary.judge)})` : ''}</div>
       </div>
     </div>
   `;

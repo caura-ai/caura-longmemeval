@@ -47,8 +47,13 @@ CAURA_TOP_K=20
 GEMINI_API_KEY=AIzaSy...
 READER_LLM=gemini
 READER_MODEL=gemini-3.8-flash
-JUDGE_LLM=gemini
-JUDGE_MODEL=gemini-2.5-flash-lite
+
+# Judge protocol: gpt-4o primary (headline), gemini-3.5-flash-lite secondary; both always reported
+OPENAI_API_KEY=sk-...
+JUDGE_LLM=openai
+JUDGE_MODEL=gpt-4o
+SECONDARY_JUDGE_LLM=gemini
+SECONDARY_JUDGE_MODEL=gemini-3.5-flash-lite
 ```
 
 ---
@@ -115,11 +120,27 @@ uv run longmemeval run --provider oracle --limit 10 --name oracle-baseline
 
 ## 4. Evaluating Existing Hypotheses
 
-If you already generated model responses into a JSONL file, you can evaluate them directly with the official judge:
+If you already generated model responses into a JSONL file, you can evaluate them directly with the official judge prompts. By default both protocol judges run and are written next to the hypotheses (`eval_results.json` for the primary, `eval_results_gemini35flashlite.json` for the secondary), and `results.json` gets a `secondary_evaluation` block with per-category numbers and agreement:
 
 ```bash
-uv run longmemeval evaluate-hypotheses outputs/caura-run/hypotheses.jsonl --output outputs/caura-run/eval_results.json
+uv run longmemeval evaluate-hypotheses outputs/caura-run/hypotheses.jsonl
 ```
+
+For an ad-hoc single-judge comparison, name the judge and an output file; only that judge runs:
+
+```bash
+uv run longmemeval evaluate-hypotheses outputs/caura-run/hypotheses.jsonl --judge openai --judge-model gpt-5.6-terra -o outputs/caura-run/eval_results_gpt56terra.json --no-html
+```
+
+### Judge protocol
+
+Fixed on 13 September 2026 after re-judging two full-500 runs with four judges:
+
+- **Primary: `gpt-4o`.** The LongMemEval reference judge and the one every published leaderboard number uses. Its score is the headline and goes in `eval_results.json`.
+- **Secondary: `gemini-3.5-flash-lite`.** Stricter (fails hedged answers such as "2 or 3"), cheap, and useful for development because it penalises exactly the reader behaviour we want to remove. Always reported beside the primary, never instead of it.
+- Judging costs under $1 per run per model, so neither is dropped. The judge is never chosen after seeing the score; `--judge`/`--secondary-judge` exist for controlled judge studies, and their outputs are labelled with the model name.
+
+On the 89.0% (Flash-Lite) turn-granularity run the four judges scored: gpt-4o 457/500 (91.4%), gpt-5.6-terra 457, gpt-5.6-luna 461, gemini-3.5-flash-lite 445. Pairwise agreement among the OpenAI judges was 488–492/500; Flash-Lite agreed with each on 480–482.
 
 ---
 

@@ -47,6 +47,14 @@ def format_facts(facts) -> str:
     return "\n---\n".join(lines)
 
 
+DEFAULT_PRIMARY_JUDGE = ("openai", "gpt-4o")
+DEFAULT_SECONDARY_JUDGE = ("gemini", "gemini-3.5-flash-lite")
+JUDGE_PROTOCOL = (
+    "gpt-4o primary (LongMemEval reference judge, headline number); "
+    "gemini-3.5-flash-lite secondary (strict development judge); both always reported"
+)
+
+
 class Evaluator:
     """Evaluates hypothesis JSONL files against reference dataset using LLM judges."""
 
@@ -248,13 +256,16 @@ class BenchmarkRunner:
         reader_llm: BaseLLM,
         judge_llm: BaseLLM,
         output_dir: Path = Path("outputs"),
+        secondary_judge_llm: BaseLLM | None = None,
     ):
         self.dataset = dataset
         self.provider = provider
         self.reader_llm = reader_llm
         self.judge_llm = judge_llm
+        self.secondary_judge_llm = secondary_judge_llm
         self.output_dir = output_dir
         self.evaluator = Evaluator(judge_llm=judge_llm)
+        self.secondary_evaluator = Evaluator(judge_llm=secondary_judge_llm) if secondary_judge_llm else None
 
     def run(
         self,
@@ -382,16 +393,33 @@ class BenchmarkRunner:
                 console.print(f"[bold blue]Question {item.question_id} ({item.question_type})[/bold blue]")
                 process_item(item)
 
-        # 4. Evaluate using official judge prompts
-        console.print("\n[bold]Evaluating hypotheses with judge LLM...[/bold]")
+        # 4. Evaluate using official judge prompts: primary judge -> eval_results.json (headline),
+        #    secondary judge -> eval_results_<model>.json (always reported beside it, never instead of it).
+        from .report import build_report_payload, render_report, secondary_eval_filename, summarize_secondary
+
+        primary_name = getattr(self.judge_llm, "model_name", "unknown")
+        console.print(f"\n[bold]Evaluating hypotheses with primary judge ({primary_name})...[/bold]")
         summary = self.evaluator.evaluate(hypotheses, items, out_eval_path=eval_path, concurrency=max(1, concurrency))
+
+        secondary_summary: dict[str, Any] | None = None
+        secondary_name: str | None = None
+        secondary_path: Path | None = None
+        if self.secondary_evaluator is not None:
+            secondary_name = getattr(self.secondary_judge_llm, "model_name", "unknown")
+            secondary_path = run_dir / secondary_eval_filename(secondary_name)
+            console.print(f"[bold]Evaluating hypotheses with secondary judge ({secondary_name})...[/bold]")
+            try:
+                secondary_summary = self.secondary_evaluator.evaluate(
+                    hypotheses, items, out_eval_path=secondary_path, concurrency=max(1, concurrency)
+                )
+            except Exception as exc:  # the headline must not depend on the secondary judge being reachable
+                console.print(f"[yellow]Secondary judge failed: {str(exc)[:200]}[/yellow]")
+                secondary_summary = None
 
         finished_at = datetime.now(timezone.utc)
         duration_s = (finished_at - started_at).total_seconds()
 
         # Build comprehensive benchmark result payload and generate stunning HTML report
-        from .report import build_report_payload, render_report
-
         run_meta = {
             "name": effective_name,
             "provider": self.provider.name,
@@ -401,7 +429,9 @@ class BenchmarkRunner:
             "top_k": top_k,
             "skip_ingest": skip_ingest,
             "reader": getattr(self.reader_llm, "model_name", "unknown"),
-            "judge": getattr(self.judge_llm, "model_name", "unknown"),
+            "judge": primary_name,
+            "judge_secondary": secondary_name,
+            "judge_protocol": JUDGE_PROTOCOL,
             "pipeline": pipeline,
             "parameters": {
                 "selection": {
@@ -433,13 +463,18 @@ class BenchmarkRunner:
                 "generation": {
                     "pipeline": pipeline,
                     "reader": getattr(self.reader_llm, "model_name", "unknown"),
-                    "judge": getattr(self.judge_llm, "model_name", "unknown"),
+                    "judge": primary_name,
+                    "judge_secondary": secondary_name,
                     "prompt": "agentic-v1 (extract -> answer -> infer -> verify)" if pipeline == "agentic-v1" else "Official answer prompt with chronological context",
                 },
             },
         }
 
         result_payload = build_report_payload(run_meta, summary, hypotheses)
+        if secondary_summary is not None and secondary_path is not None:
+            result_payload["secondary_evaluation"] = summarize_secondary(
+                secondary_name or "unknown", secondary_path.name, summary, secondary_summary
+            )
 
         # Save consolidated results.json
         results_path = run_dir / "results.json"
@@ -449,17 +484,34 @@ class BenchmarkRunner:
         # Render HTML report
         report_path = render_report(result_payload, run_dir / "report.html")
 
-        # Print rich summary table
+        # Print rich summary table: primary judge is the headline, secondary sits beside it.
         table = Table(title=f"LongMemEval Results: {effective_name}")
         table.add_column("Category", style="cyan")
-        table.add_column("Score", justify="right")
+        table.add_column(f"{primary_name} (primary)", justify="right")
+        if secondary_summary is not None:
+            table.add_column(f"{secondary_name} (secondary)", justify="right")
         table.add_column("Total", justify="right")
 
         for qtype, stats in summary["by_question_type"].items():
-            table.add_row(qtype, f"{stats['accuracy']:.1%}", str(stats["total"]))
+            row = [qtype, f"{stats['accuracy']:.1%}"]
+            if secondary_summary is not None:
+                s2 = secondary_summary["by_question_type"].get(qtype, {})
+                row.append(f"{s2.get('accuracy', 0.0):.1%}")
+            row.append(str(stats["total"]))
+            table.add_row(*row)
 
-        table.add_row("OVERALL", f"[bold green]{summary['overall_accuracy']:.1%}[/bold green]", str(summary["total_questions"]))
+        row = ["OVERALL", f"[bold green]{summary['overall_accuracy']:.1%}[/bold green]"]
+        if secondary_summary is not None:
+            row.append(f"{secondary_summary['overall_accuracy']:.1%}")
+        row.append(str(summary["total_questions"]))
+        table.add_row(*row)
         console.print(table)
+        if secondary_summary is not None:
+            agree = result_payload["secondary_evaluation"]["agreement_with_primary"]
+            console.print(
+                f"[dim]Judge protocol: {JUDGE_PROTOCOL}. "
+                f"Agreement {agree}/{summary['total_questions']}; secondary verdicts in {secondary_path.name}[/dim]"
+            )
 
         console.print(f"\n[bold green]HTML Benchmark Report:[/bold green] [cyan]{report_path}[/cyan]\n")
 
