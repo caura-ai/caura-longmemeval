@@ -309,12 +309,26 @@ class OpenAILLM(BaseLLM):
             organization=os.environ.get("OPENAI_ORGANIZATION"),
         )
 
+    def _is_reasoning_model(self) -> bool:
+        # GPT-5.x (sol/terra/luna) and o-series reject `temperature` and `max_tokens`;
+        # they take `max_completion_tokens`, which also has to cover hidden reasoning tokens.
+        name = self.model_name.lower()
+        return name.startswith("gpt-5") or bool(re.match(r"^o\d", name))
+
+    def _request_kwargs(self, max_tokens: int, temperature: float) -> dict:
+        if self._is_reasoning_model():
+            kwargs: dict = {"max_completion_tokens": max(max_tokens, 512)}
+            effort = os.environ.get("OPENAI_REASONING_EFFORT")
+            if effort:
+                kwargs["reasoning_effort"] = effort
+            return kwargs
+        return {"temperature": temperature, "max_tokens": max_tokens}
+
     def generate(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.0) -> str:
         resp = self.client.chat.completions.create(
             model=self.model_name,
             messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens,
+            **self._request_kwargs(max_tokens, temperature),
         )
         return resp.choices[0].message.content or ""
 
@@ -322,8 +336,7 @@ class OpenAILLM(BaseLLM):
         resp = self.client.chat.completions.create(
             model=self.model_name,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=64,
+            **self._request_kwargs(64, 0.0),
         )
         content = resp.choices[0].message.content or ""
         label = "yes" in content.lower()
