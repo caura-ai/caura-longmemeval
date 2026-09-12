@@ -26,6 +26,10 @@ MAX_SEARCH_TOP_K = 200
 BULK_MAX_ITEMS = 100
 _BULK_MIN_INTERVAL_S = 0.55
 RRF_K = 60
+# Sibling expansion: cap on accepted hits per session (breadth over depth) and
+# how many candidates to pull from /search when expansion is on.
+MAX_SEEDS_PER_SESSION = 3
+SIBLING_CANDIDATE_TOP_K = 150
 
 CATEGORY_SEARCH_PROFILES: dict[str, dict[str, int]] = {
     "temporal-reasoning": {
@@ -44,19 +48,19 @@ CATEGORY_SEARCH_PROFILES: dict[str, dict[str, int]] = {
         "multiquery": 2,
     },
     "knowledge-update": {
-        "top_k": 45,
-        "merge_top_k": 50,
-        "multiquery": 3,
+        "top_k": 30,
+        "merge_top_k": 35,
+        "multiquery": 2,
     },
     "single-session-user": {
-        "top_k": 25,
-        "merge_top_k": 25,
+        "top_k": 20,
+        "merge_top_k": 20,
         "multiquery": 1,
     },
     "single-session-preference": {
-        "top_k": 25,
-        "merge_top_k": 30,
-        "multiquery": 2,
+        "top_k": 15,
+        "merge_top_k": 15,
+        "multiquery": 1,
     },
 }
 
@@ -128,6 +132,56 @@ def _chunk_text(text: str, size: int = 4000) -> list[str]:
     return chunks
 
 
+_ROLE_LINE_RE = re.compile(r"^(User|Assistant|System|Tool)\s*:", re.IGNORECASE)
+
+
+def _chunk_turns(text: str, size: int = 1200) -> list[str]:
+    """Split a session transcript into user-statement-centred chunks.
+
+    The transcript is the ``Role: content`` blocks produced by
+    ``LongMemEvalDataset.item_to_documents`` joined by blank lines. Each chunk
+    starts at a User turn and carries the assistant reply that follows it, so a
+    memory is "what the user said (and what they were told)". Replies longer
+    than ``size`` are split and each piece is prefixed with the user turn it
+    answers, so the embedding still centres on the user's statement.
+    """
+    blocks = [b for b in text.split("\n\n") if b.strip()]
+    if not blocks:
+        return [text] if text else []
+
+    # Group blocks into exchanges: [user_turn, reply_block, reply_block, ...]
+    exchanges: list[list[str]] = []
+    for block in blocks:
+        is_user = bool(_ROLE_LINE_RE.match(block)) and block.split(":", 1)[0].strip().lower() == "user"
+        if is_user or not exchanges:
+            exchanges.append([block])
+        else:
+            exchanges[-1].append(block)
+
+    chunks: list[str] = []
+    for exchange in exchanges:
+        joined = "\n\n".join(exchange)
+        if len(joined) <= size:
+            chunks.append(joined)
+            continue
+
+        user_turn = exchange[0]
+        reply = "\n\n".join(exchange[1:])
+        if len(user_turn) > size:
+            chunks.extend(_chunk_text(user_turn, size))
+        else:
+            chunks.append(user_turn)
+        if not reply:
+            continue
+
+        anchor = user_turn if len(user_turn) <= 240 else user_turn[:237].rstrip() + "..."
+        prefix = f"(in reply to) {anchor}\n\n"
+        reply_size = max(200, size - len(prefix))
+        for piece in _chunk_text(reply, reply_size):
+            chunks.append(prefix + piece)
+    return chunks
+
+
 class CauraMemoryProvider(BaseMemoryProvider):
     name = "caura"
 
@@ -139,7 +193,7 @@ class CauraMemoryProvider(BaseMemoryProvider):
         agent_prefix: str = "lme",
         ingest_mode: str = "bulk",
         chunk_chars: int | None = None,
-        bulk_size: int = 25,
+        bulk_size: int | None = None,
         top_k: int = 20,
         multiquery: int | None = None,
         merge_top_k: int | None = None,
@@ -148,6 +202,10 @@ class CauraMemoryProvider(BaseMemoryProvider):
         category_adaptive: bool | None = None,
         send_valid_at: bool | None = None,
         as_of_recall: bool | None = None,
+        chunk_mode: str | None = None,
+        sibling_expansion: bool | None = None,
+        context_budget_chars: int | None = None,
+        sibling_window: int | None = None,
     ):
         self.base_url = (base_url or _env("BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
         self.api_key = api_key or _env("API_KEY")
@@ -157,12 +215,43 @@ class CauraMemoryProvider(BaseMemoryProvider):
         self._tenant_id = tenant_id or _env("TENANT_ID")
         self.agent_prefix = agent_prefix or _env("AGENT_PREFIX", "lme")
         self.ingest_mode = (ingest_mode or _env("INGEST", "bulk")).lower()
+        # ``chars``: legacy 4k paragraph chunks (one session -> a few big parts).
+        # ``turns``: one memory per user statement (+ its reply), see _chunk_turns.
+        self.chunk_mode = (chunk_mode or _env("CHUNK_MODE", "chars")).lower()
+        if self.chunk_mode not in ("chars", "turns"):
+            raise ValueError(f"Unknown chunk_mode '{self.chunk_mode}' (expected 'chars' or 'turns')")
         if chunk_chars is not None:
             self.chunk_chars = chunk_chars
+        elif self.chunk_mode == "turns":
+            # CAURA_CHUNK_CHARS belongs to the legacy mode; turns has its own knob.
+            self.chunk_chars = int(_env("TURN_CHUNK_CHARS", "1200"))
         else:
             self.chunk_chars = int(_env("CHUNK_CHARS", "4000"))
 
-        self.bulk_size = min(int(_env("BULK_SIZE", str(bulk_size))), BULK_MAX_ITEMS)
+        # Sibling expansion: after ranking, pull the other chunks of every hit's
+        # session (same doc_id in metadata) so a fact-bearing turn that ranked
+        # low still reaches the reader when a sibling turn ranked high.
+        if sibling_expansion is not None:
+            self.sibling_expansion = bool(sibling_expansion)
+        else:
+            self.sibling_expansion = _env("SIBLING_EXPANSION", "0").lower() in ("1", "true", "yes")
+        if context_budget_chars is not None:
+            self.context_budget_chars = int(context_budget_chars)
+        else:
+            self.context_budget_chars = int(_env("CONTEXT_BUDGET_CHARS", "150000"))
+        # How many neighbouring chunks (each side) of a hit to pull from its
+        # session. 0 = the whole session. On the balanced 54-set, whole-session
+        # expansion gave gold-turn coverage 0.965 (51/54 fully covered) vs
+        # 0.902 for a +-3 window and 0.913 for the legacy 4k-part retrieval,
+        # so depth beats breadth here.
+        if sibling_window is not None:
+            self.sibling_window = max(0, int(sibling_window))
+        else:
+            self.sibling_window = max(0, int(_env("SIBLING_WINDOW", "0")))
+        self._listing_supported: bool | None = None
+
+        env_bulk = _env("BULK_SIZE")
+        self.bulk_size = min(int(bulk_size if bulk_size is not None else (env_bulk or 25)), BULK_MAX_ITEMS)
         self.top_k = min(int(_env("TOP_K", str(top_k))), MAX_SEARCH_TOP_K)
 
         if multiquery is not None:
@@ -277,9 +366,12 @@ class CauraMemoryProvider(BaseMemoryProvider):
                 time.sleep(_BULK_MIN_INTERVAL_S - gap)
             self._last_bulk_at = time.monotonic()
 
+        # Retries reuse the same X-Bulk-Attempt-Id, which the server uses to
+        # recover items already committed before a 504/upstream timeout.
         resp = self._request(
             "POST",
             "/memories/bulk",
+            retries=6,
             params={"mode": mode},
             json={
                 "tenant_id": self.tenant_id,
@@ -297,7 +389,10 @@ class CauraMemoryProvider(BaseMemoryProvider):
     def _ingest_bulk(self, agent_id: str, documents: list[MemoryDocument]) -> int:
         items: list[dict] = []
         for doc in documents:
-            chunks = _chunk_text(doc.content, self.chunk_chars)
+            if self.chunk_mode == "turns":
+                chunks = _chunk_turns(doc.content, self.chunk_chars)
+            else:
+                chunks = _chunk_text(doc.content, self.chunk_chars)
             for idx, chunk in enumerate(chunks):
                 header_bits = []
                 if doc.timestamp:
@@ -305,7 +400,8 @@ class CauraMemoryProvider(BaseMemoryProvider):
                 if doc.context:
                     header_bits.append(f"context: {doc.context}")
                 if len(chunks) > 1:
-                    header_bits.append(f"part {idx+1}/{len(chunks)}")
+                    unit = "turn" if self.chunk_mode == "turns" else "part"
+                    header_bits.append(f"{unit} {idx+1}/{len(chunks)}")
                 header = f"[{' | '.join(header_bits)}]\n" if header_bits else ""
                 content = (header + chunk)[:MAX_CONTENT_LENGTH]
 
@@ -318,6 +414,8 @@ class CauraMemoryProvider(BaseMemoryProvider):
                             "bench": "longmemeval",
                             "doc_id": doc.id,
                             "chunk": idx,
+                            "n_chunks": len(chunks),
+                            "chunk_mode": self.chunk_mode,
                             **({"doc_timestamp": doc.timestamp} if doc.timestamp else {}),
                         },
                         **({"ts_valid_start": doc.timestamp} if doc.timestamp else {}),
@@ -435,6 +533,150 @@ class CauraMemoryProvider(BaseMemoryProvider):
             return []
         return resp.json().get("items") or []
 
+    # ------------------------------------------------------------------ siblings
+
+    def _list_agent_memories(self, agent_id: str, unit_id: str) -> list[dict]:
+        """List every memory stored for one benchmark unit (agent), paging through /memories.
+
+        Filters client-side on ``metadata.doc_id`` so the result is correct even
+        if the server ignores the agent filter. Returns [] when listing is not
+        supported so the caller can fall back to per-session search.
+        """
+        if self._listing_supported is False:
+            return []
+        page_size = 200
+        max_pages = 40
+        seen: dict[str, dict] = {}
+        prefix = f"{unit_id}_"
+        cursor: str | None = None
+        offset = 0
+        for _ in range(max_pages):
+            params: dict = {
+                "tenant_id": self.tenant_id,
+                "agent_id": agent_id,
+                "fleet_id": agent_id,
+                "limit": page_size,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            else:
+                params["offset"] = offset
+            resp = self._request("GET", "/memories", params=params)
+            if resp.status_code != 200:
+                if not seen:
+                    self._listing_supported = False
+                return list(seen.values())
+            body = resp.json()
+            items = body.get("items") or []
+            for it in items:
+                mid = str(it.get("id", ""))
+                meta = it.get("metadata") or {}
+                # The store also holds server-derived memories (no doc_id); skip them here.
+                if mid and mid not in seen and str(meta.get("doc_id", "")).startswith(prefix):
+                    seen[mid] = it
+            if len(items) < page_size:
+                break
+            next_cursor = body.get("next_cursor")
+            if next_cursor:
+                if next_cursor == cursor:
+                    break
+                cursor = next_cursor
+            else:
+                offset += page_size
+        if self._listing_supported is None:
+            self._listing_supported = bool(seen)
+        return list(seen.values())
+
+    def _siblings_by_search(self, agent_id: str, doc_id: str, valid_at: str | None) -> list[dict]:
+        """Fallback: find a session's chunks by searching for its header string."""
+        items = self._search_once(f"Session {doc_id}", agent_id, top_k=60, valid_at=valid_at)
+        return [it for it in items if (it.get("metadata") or {}).get("doc_id") == doc_id]
+
+    def _expand_siblings(
+        self,
+        ranked: list[dict],
+        agent_id: str,
+        unit_id: str,
+        seed_limit: int,
+        valid_at: str | None,
+    ) -> list[dict]:
+        """Fill a character budget by walking hits in rank order.
+
+        Every accepted hit brings its neighbourhood: the other chunks of the
+        same session within ``sibling_window`` positions (or the whole session
+        when the window is 0). At most ``seed_limit`` hits are accepted, and at
+        most ``MAX_SEEDS_PER_SESSION`` per session so long sessions with many
+        matching turns don't crowd out breadth. Stops when the budget is spent.
+        Result is ordered (session date, session, chunk index) so the reader
+        sees each session contiguously.
+        """
+        budget = self.context_budget_chars
+        chosen: dict[str, dict] = {}
+        chars = 0
+
+        listing = self._list_agent_memories(agent_id, unit_id)
+        by_doc: dict[str, list[dict]] = {}
+        for it in listing:
+            doc_id = str((it.get("metadata") or {}).get("doc_id", ""))
+            if doc_id:
+                by_doc.setdefault(doc_id, []).append(it)
+
+        def chunk_idx(it: dict) -> int:
+            return int((it.get("metadata") or {}).get("chunk", 0) or 0)
+
+        def add(it: dict) -> bool:
+            nonlocal chars
+            mid = str(it.get("id", ""))
+            if not mid or mid in chosen:
+                return True
+            size = len(it.get("content") or "")
+            if chars + size > budget:
+                return False
+            chosen[mid] = it
+            chars += size
+            return True
+
+        seeds_per_doc: dict[str, int] = {}
+        fetched_fallback: dict[str, list[dict]] = {}
+        seeds = 0
+        for hit in ranked:
+            if seeds >= seed_limit or chars >= budget:
+                break
+            mid = str(hit.get("id", ""))
+            if not mid or mid in chosen:
+                continue
+            doc_id = str((hit.get("metadata") or {}).get("doc_id", ""))
+            if doc_id and seeds_per_doc.get(doc_id, 0) >= MAX_SEEDS_PER_SESSION:
+                continue
+            if not add(hit):
+                break
+            seeds += 1
+            if not doc_id:
+                continue  # server-derived memory without a session; nothing to expand
+            seeds_per_doc[doc_id] = seeds_per_doc.get(doc_id, 0) + 1
+
+            sibs = by_doc.get(doc_id)
+            if sibs is None and not listing:
+                if doc_id not in fetched_fallback and len(fetched_fallback) < 12:
+                    fetched_fallback[doc_id] = self._siblings_by_search(agent_id, doc_id, valid_at)
+                sibs = fetched_fallback.get(doc_id, [])
+            if not sibs:
+                continue
+            anchor = chunk_idx(hit)
+            if self.sibling_window > 0:
+                sibs = [s for s in sibs if abs(chunk_idx(s) - anchor) <= self.sibling_window]
+            # Nearest neighbours first so a tight budget keeps the closest context.
+            for sib in sorted(sibs, key=lambda s: (abs(chunk_idx(s) - anchor), chunk_idx(s))):
+                if not add(sib):
+                    break
+
+        def sort_key(it: dict) -> tuple:
+            meta = it.get("metadata") or {}
+            ts = it.get("ts_valid_start") or meta.get("doc_timestamp") or it.get("created_at") or ""
+            return (str(ts), str(meta.get("doc_id", "")), int(meta.get("chunk", 0) or 0))
+
+        return sorted(chosen.values(), key=sort_key)
+
     def retrieve(
         self,
         unit_id: str,
@@ -465,28 +707,11 @@ class CauraMemoryProvider(BaseMemoryProvider):
                 if w.lower() not in _QUERY_STOPWORDS and len(w) > 2
             ]
             if content_words:
-                kw_query = " ".join(content_words[:30])
-                if kw_query not in queries:
-                    queries.append(kw_query)
-
-            # Extract capitalized named entities (e.g. "Rachel", "Chicago", "Target")
-            proper_nouns = [
-                w for w in re.findall(r"\b[A-Z][a-z0-9'-]+\b", query)
-                if w.lower() not in _QUERY_STOPWORDS and len(w) > 1
-            ]
-            if proper_nouns and len(queries) < target_multiquery:
-                entity_query = " ".join(proper_nouns)
-                if entity_query not in queries:
-                    queries.append(entity_query)
-
-        if target_multiquery > len(queries):
+                queries.append(" ".join(content_words[:30]))
+        if target_multiquery > 2:
             all_words = [w for w in re.findall(r"[A-Za-z0-9'\-]+", query) if len(w) > 2]
-            if all_words:
-                broad_query = " ".join(all_words[:30])
-                if broad_query not in queries:
-                    queries.append(broad_query)
-
-        queries = queries[:target_multiquery]
+            if all_words and all_words != content_words:
+                queries.append(" ".join(all_words[:30]))
 
         # LongMemEval's question_date is "2023/05/20 (Sat) 02:21"-shaped; the
         # dataset module already knows how to read it. Unparseable → no valid_at.
@@ -495,14 +720,18 @@ class CauraMemoryProvider(BaseMemoryProvider):
             parsed = parse_timestamp(query_date)
             valid_at = parsed.isoformat() if parsed else None
 
+        # With sibling expansion the seed list is walked until the budget is
+        # spent, so ask the server for a deeper candidate list.
+        search_top_k = max(target_top_k, SIBLING_CANDIDATE_TOP_K) if self.sibling_expansion else target_top_k
+
         if len(queries) == 1:
-            raw_items = self._search_once(queries[0], agent_id, top_k=target_top_k, valid_at=valid_at)
+            raw_items = self._search_once(queries[0], agent_id, top_k=search_top_k, valid_at=valid_at)
         else:
             fused: dict[str, float] = {}
             best: dict[str, dict] = {}
             for q in queries:
                 for rank, item in enumerate(
-                    self._search_once(q, agent_id, top_k=target_top_k, valid_at=valid_at)
+                    self._search_once(q, agent_id, top_k=search_top_k, valid_at=valid_at)
                 ):
                     mid = str(item.get("id"))
                     fused[mid] = fused.get(mid, 0.0) + 1.0 / (RRF_K + rank + 1)
@@ -510,8 +739,15 @@ class CauraMemoryProvider(BaseMemoryProvider):
             raw_items = [best[mid] for mid in sorted(fused, key=lambda i: fused[i], reverse=True)]
 
         effective_limit = max(target_top_k, target_merge_top_k) if target_multiquery > 1 else target_top_k
+        if self.sibling_expansion:
+            # Budget-governed: walk the whole candidate list; the per-session
+            # seed cap keeps breadth, the char budget bounds the context.
+            selected = self._expand_siblings(raw_items, agent_id, unit_id, len(raw_items), valid_at)
+        else:
+            selected = raw_items[:effective_limit]
+
         results: list[RetrievedFact] = []
-        for it in raw_items[:effective_limit]:
+        for it in selected:
             meta = it.get("metadata") or {}
             ts = it.get("ts_valid_start") or meta.get("doc_timestamp") or it.get("created_at")
             results.append(

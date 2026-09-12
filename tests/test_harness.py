@@ -71,9 +71,89 @@ def test_caura_category_adaptive_profiles():
     assert "temporal-reasoning" in CATEGORY_SEARCH_PROFILES
     assert CATEGORY_SEARCH_PROFILES["temporal-reasoning"]["top_k"] == 50
     assert CATEGORY_SEARCH_PROFILES["multi-session"]["top_k"] == 60
-    assert CATEGORY_SEARCH_PROFILES["single-session-preference"]["top_k"] == 25
-    assert CATEGORY_SEARCH_PROFILES["knowledge-update"]["top_k"] == 45
+    assert CATEGORY_SEARCH_PROFILES["single-session-preference"]["top_k"] == 15
+    assert CATEGORY_SEARCH_PROFILES["knowledge-update"]["top_k"] == 30
 
     provider = CauraMemoryProvider(api_key="test_key", tenant_id="test_tenant")
     assert provider.category_adaptive is True
     assert provider.chunk_chars == 4000
+    assert provider.chunk_mode == "chars"
+    assert provider.sibling_expansion is False
+
+
+def test_chunk_turns_groups_user_turn_with_reply_and_splits_long_replies():
+    from longmemeval.providers.caura import _chunk_turns
+
+    short_reply = "Assistant: Sure, noted."
+    long_reply = "Assistant: " + " ".join(f"sentence {i}." for i in range(400))  # ~4.5k chars
+    text = "\n\n".join([
+        "User: I adopted a puppy named Biscuit last week.",
+        short_reply,
+        "User: Can you suggest a training schedule?",
+        long_reply,
+        "User: Thanks!",
+    ])
+    chunks = _chunk_turns(text, size=1200)
+
+    # First exchange fits: user + reply in one chunk.
+    assert chunks[0].startswith("User: I adopted a puppy named Biscuit")
+    assert short_reply in chunks[0]
+    # Second exchange: user turn alone, then reply pieces each anchored to the user turn.
+    assert chunks[1] == "User: Can you suggest a training schedule?"
+    reply_pieces = [c for c in chunks if c.startswith("(in reply to) User: Can you suggest a training schedule?")]
+    assert len(reply_pieces) >= 4
+    assert all(len(c) <= 1200 for c in chunks)
+    # Trailing user turn survives as its own memory.
+    assert chunks[-1] == "User: Thanks!"
+    # Nothing lost.
+    assert "sentence 399." in "".join(chunks)
+
+
+def test_sibling_expansion_completes_best_ranked_sessions_within_budget(monkeypatch):
+    from longmemeval.providers.caura import CauraMemoryProvider
+
+    provider = CauraMemoryProvider(
+        api_key="k", tenant_id="t", chunk_mode="turns", sibling_expansion=True,
+        context_budget_chars=1000, sibling_window=0,
+    )
+    assert provider.chunk_chars == 1200  # turns mode ignores CAURA_CHUNK_CHARS
+
+    def mem(mid, doc, chunk, ts, size=100):
+        return {
+            "id": mid,
+            "content": "x" * size,
+            "ts_valid_start": ts,
+            "metadata": {"doc_id": doc, "chunk": chunk},
+        }
+
+    # Store: session A (3 chunks, older), session B (3 chunks, newer), session C (2 chunks).
+    store = [
+        mem("a0", "q1_A", 0, "2023-01-01"), mem("a1", "q1_A", 1, "2023-01-01"), mem("a2", "q1_A", 2, "2023-01-01"),
+        mem("b0", "q1_B", 0, "2023-02-01"), mem("b1", "q1_B", 1, "2023-02-01"), mem("b2", "q1_B", 2, "2023-02-01"),
+        mem("c0", "q1_C", 0, "2023-03-01"), mem("c1", "q1_C", 1, "2023-03-01"),
+    ]
+    monkeypatch.setattr(provider, "_list_agent_memories", lambda agent_id, unit_id: list(store))
+
+    # Ranked hits: one chunk from B (best), one from A, one from C.
+    ranked = [store[4], store[0], store[7]]
+    selected = provider._expand_siblings(ranked, "lme-q1", "q1", seed_limit=10, valid_at=None)
+    ids = [s["id"] for s in selected]
+
+    # Budget 1000 chars = 10 chunks of 100, store has 8 -> everything fits.
+    assert set(ids) == {m["id"] for m in store}
+    # Ordered by session date then chunk index, so each session is contiguous and in order.
+    assert ids == ["a0", "a1", "a2", "b0", "b1", "b2", "c0", "c1"]
+
+    # Tight budget: best-ranked hit's session (B) is completed first, then A partially; C never reached.
+    provider.context_budget_chars = 500
+    selected = provider._expand_siblings(ranked, "lme-q1", "q1", seed_limit=10, valid_at=None)
+    ids = set(s["id"] for s in selected)
+    assert ids == {"b0", "b1", "b2", "a0", "a1"}
+
+    # Window of 1 around each hit: session A hit at chunk 0 -> only a1 is pulled, not a2.
+    provider.context_budget_chars = 10_000
+    provider.sibling_window = 1
+    selected = provider._expand_siblings(ranked, "lme-q1", "q1", seed_limit=10, valid_at=None)
+    ids = set(s["id"] for s in selected)
+    assert "a1" in ids and "a2" not in ids
+    assert {"b0", "b1", "b2", "c0", "c1"} <= ids

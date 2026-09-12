@@ -52,6 +52,13 @@ def run(
     skip_ingest: bool = typer.Option(False, "--skip-ingest", help="Skip document ingestion (use existing store)"),
     top_k: int = typer.Option(20, "--top-k", "-k", help="Retrieval top_k (max 200 for Caura; when category adaptive is active, uses category profiles)"),
     as_of_recall: bool = typer.Option(True, "--as-of-recall/--no-as-of-recall", help="Enable As-Of Recall: anchor temporal ranking and valid_at at question_date"),
+    chunk_mode: Optional[str] = typer.Option(None, "--chunk-mode", help="Caura ingestion chunking: chars (4k parts, default) | turns (one memory per user statement + reply)"),
+    chunk_chars: Optional[int] = typer.Option(None, "--chunk-chars", help="Max chunk size in characters (default 4000 for chars, 1200 for turns)"),
+    sibling_expansion: Optional[bool] = typer.Option(None, "--sibling-expansion/--no-sibling-expansion", help="After ranking, pull the other chunks of each hit's session into the context (budgeted)"),
+    context_budget: Optional[int] = typer.Option(None, "--context-budget", help="Character budget for the retrieved context when sibling expansion is on (default 150000)"),
+    sibling_window: Optional[int] = typer.Option(None, "--sibling-window", help="Neighbouring chunks per side to pull around each hit (default 0 = whole session)"),
+    agent_prefix: Optional[str] = typer.Option(None, "--agent-prefix", help="Caura agent-id prefix; use a fresh prefix to ingest into a separate store without touching an existing one"),
+    bulk_size: Optional[int] = typer.Option(None, "--bulk-size", help="Items per /memories/bulk call (max 100); raise for fine-grained chunking"),
     pipeline: str = typer.Option("direct", "--pipeline", help="Pipeline architecture: direct | agentic-v1"),
     exclude_results: Optional[list[Path]] = typer.Option(None, "--exclude-results", help="Exclude question IDs from previous results.json / eval_results.json / hypotheses.jsonl"),
     seed: Optional[int] = typer.Option(None, "--seed", help="Random seed for sampling questions"),
@@ -61,7 +68,22 @@ def run(
 ):
     """Run LongMemEval benchmark with selected memory provider and evaluator."""
     ds = LongMemEvalDataset(data_path=data_path)
-    mem_provider = get_memory_provider(provider, send_valid_at=as_of_recall, as_of_recall=as_of_recall)
+    provider_kwargs: dict = {"send_valid_at": as_of_recall, "as_of_recall": as_of_recall}
+    if chunk_mode is not None:
+        provider_kwargs["chunk_mode"] = chunk_mode
+    if chunk_chars is not None:
+        provider_kwargs["chunk_chars"] = chunk_chars
+    if sibling_expansion is not None:
+        provider_kwargs["sibling_expansion"] = sibling_expansion
+    if context_budget is not None:
+        provider_kwargs["context_budget_chars"] = context_budget
+    if sibling_window is not None:
+        provider_kwargs["sibling_window"] = sibling_window
+    if agent_prefix is not None:
+        provider_kwargs["agent_prefix"] = agent_prefix
+    if bulk_size is not None:
+        provider_kwargs["bulk_size"] = bulk_size
+    mem_provider = get_memory_provider(provider, **provider_kwargs)
     reader = get_llm(provider=reader_llm, model=reader_model or os.environ.get("READER_MODEL"))
     judge = get_llm(provider=judge_llm, model=judge_model or os.environ.get("JUDGE_MODEL"))
 
@@ -97,6 +119,88 @@ def run(
         )
     finally:
         mem_provider.cleanup()
+
+
+@app.command()
+def ingest(
+    provider: str = typer.Option("caura", "--provider", "-p", help=f"Memory provider: {list(PROVIDERS.keys())}"),
+    category: Optional[str] = typer.Option(None, "--category", help=f"Filter question category: {QUESTION_TYPES}"),
+    limit: Optional[int] = typer.Option(None, "--limit", "-n", help="Limit total questions"),
+    limit_per_category: Optional[int] = typer.Option(None, "--per-category", help="Limit questions per category"),
+    question_id: Optional[str] = typer.Option(None, "--question-id", "-q", help="Single question ID"),
+    name: str = typer.Option(..., "--name", help="Marker directory name under outputs/ (progress is recorded in <name>/ingested.txt for resume)"),
+    chunk_mode: Optional[str] = typer.Option(None, "--chunk-mode", help="chars | turns"),
+    chunk_chars: Optional[int] = typer.Option(None, "--chunk-chars", help="Max chunk size in characters"),
+    agent_prefix: Optional[str] = typer.Option(None, "--agent-prefix", help="Caura agent-id prefix for this store"),
+    bulk_size: Optional[int] = typer.Option(None, "--bulk-size", help="Items per /memories/bulk call (max 100)"),
+    concurrency: int = typer.Option(4, "--concurrency", "-c", help="Concurrent questions being ingested"),
+    seed: Optional[int] = typer.Option(None, "--seed", help="Random seed for sampling questions"),
+    data_path: Optional[Path] = typer.Option(None, "--data-path", help="Local path to longmemeval_s_cleaned.json"),
+    output_dir: Path = typer.Option(Path("outputs"), "--output-dir", "-o", help="Directory for benchmark outputs"),
+):
+    """Ingest haystacks only (no retrieval/generation), so a later `run --skip-ingest` reads a settled store."""
+    import concurrent.futures
+    import threading
+    import time as _time
+
+    ds = LongMemEvalDataset(data_path=data_path)
+    provider_kwargs: dict = {}
+    if chunk_mode is not None:
+        provider_kwargs["chunk_mode"] = chunk_mode
+    if chunk_chars is not None:
+        provider_kwargs["chunk_chars"] = chunk_chars
+    if agent_prefix is not None:
+        provider_kwargs["agent_prefix"] = agent_prefix
+    if bulk_size is not None:
+        provider_kwargs["bulk_size"] = bulk_size
+    mem_provider = get_memory_provider(provider, **provider_kwargs)
+    # No point sleeping per question here; the store settles while the rest ingests.
+    if hasattr(mem_provider, "settle_time"):
+        mem_provider.settle_time = 0.0
+
+    items = ds.load_items(
+        category=category, limit=limit, limit_per_category=limit_per_category, question_id=question_id, seed=seed
+    )
+    marker_dir = output_dir / name
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    marker = marker_dir / "ingested.txt"
+    done: set[str] = set()
+    if marker.exists():
+        done = {l.strip() for l in marker.read_text(encoding="utf-8").splitlines() if l.strip()}
+    todo = [it for it in items if it.question_id not in done]
+    console.print(f"[bold cyan]Ingesting {len(todo)} questions ({len(done)} already done) with concurrency={concurrency}...[/bold cyan]")
+
+    lock = threading.Lock()
+    counter = {"n": len(done)}
+
+    failed: list[str] = []
+
+    def one(item):
+        docs = ds.item_to_documents(item)
+        t0 = _time.perf_counter()
+        try:
+            mem_provider.reset_unit(item.question_id)
+            stored = mem_provider.ingest(item.question_id, docs)
+        except Exception as exc:  # keep going; unmarked questions are re-ingested on resume
+            with lock:
+                failed.append(item.question_id)
+                console.print(f"  [red]#{item.question_id} failed: {str(exc)[:200]}[/red]")
+            return
+        dt = _time.perf_counter() - t0
+        with lock:
+            counter["n"] += 1
+            with open(marker, "a", encoding="utf-8") as f:
+                f.write(item.question_id + "\n")
+            console.print(f"  [{counter['n']}/{len(items)}] #{item.question_id}: {len(docs)} sessions -> {stored} chunks in {dt:.1f}s")
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+            list(pool.map(one, todo))
+    finally:
+        mem_provider.cleanup()
+    if failed:
+        console.print(f"[yellow]{len(failed)} question(s) failed and are not marked done; rerun to retry: {', '.join(failed)}[/yellow]")
+    console.print(f"[green]Done. Progress marker: {marker}[/green]")
 
 
 @app.command()
