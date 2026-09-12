@@ -264,7 +264,7 @@ class BenchmarkRunner:
         question_id: str | None = None,
         run_name: str | None = None,
         skip_ingest: bool = False,
-        top_k: int = 20,
+        top_k: int | None = None,
         pipeline: str = "direct",
         exclude_ids: set[str] | list[str] | None = None,
         seed: int | None = None,
@@ -281,6 +281,10 @@ class BenchmarkRunner:
         if not items:
             console.print("[red]No questions found matching criteria.[/red]")
             return {}
+
+        # None -> the provider's own retrieval profile decides (e.g. Caura turn mode = flat top_k 50).
+        if top_k is None:
+            top_k = int(getattr(self.provider, "top_k", 20) or 20)
 
         effective_name = run_name or f"{self.provider.name}-{pipeline}-{int(time.time())}"
         run_dir = self.output_dir / effective_name

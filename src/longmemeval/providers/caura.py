@@ -194,7 +194,7 @@ class CauraMemoryProvider(BaseMemoryProvider):
         ingest_mode: str = "bulk",
         chunk_chars: int | None = None,
         bulk_size: int | None = None,
-        top_k: int = 20,
+        top_k: int | None = None,
         multiquery: int | None = None,
         merge_top_k: int | None = None,
         commit_batch: int = 50,
@@ -233,6 +233,8 @@ class CauraMemoryProvider(BaseMemoryProvider):
         # low still reaches the reader when a sibling turn ranked high.
         if sibling_expansion is not None:
             self.sibling_expansion = bool(sibling_expansion)
+        elif self.chunk_mode == "turns":
+            self.sibling_expansion = _env("TURN_SIBLING_EXPANSION", "1").lower() in ("1", "true", "yes")
         else:
             self.sibling_expansion = _env("SIBLING_EXPANSION", "0").lower() in ("1", "true", "yes")
         if context_budget_chars is not None:
@@ -252,22 +254,45 @@ class CauraMemoryProvider(BaseMemoryProvider):
 
         env_bulk = _env("BULK_SIZE")
         self.bulk_size = min(int(bulk_size if bulk_size is not None else (env_bulk or 25)), BULK_MAX_ITEMS)
-        self.top_k = min(int(_env("TOP_K", str(top_k))), MAX_SEARCH_TOP_K)
+
+        # Retrieval profile. Legacy (chars) mode keeps the category-adaptive
+        # profiles and CAURA_TOP_K/MULTIQUERY/MERGE_TOP_K/CATEGORY_ADAPTIVE.
+        # Turn mode defaults to a flat profile: top_k 50, single dense query,
+        # no category logic. Measured on the balanced 54 with whole-session
+        # expansion: flat k50/mq1 coverage 0.965 vs adaptive 0.961, and extra
+        # keyword/broad query variants only lowered coverage (mq2 0.955,
+        # mq3 0.936). Turn mode reads CAURA_TURN_* so the legacy .env values
+        # for the 4k store do not leak in. Explicit args always win.
+        turns = self.chunk_mode == "turns"
+        env_key = (lambda k: f"TURN_{k}") if turns else (lambda k: k)
+        mode_defaults = (
+            {"TOP_K": "50", "MULTIQUERY": "1", "MERGE_TOP_K": "50", "CATEGORY_ADAPTIVE": "false"}
+            if turns
+            else {"TOP_K": "20", "MULTIQUERY": "2", "MERGE_TOP_K": "35", "CATEGORY_ADAPTIVE": "true"}
+        )
+
+        def knob(name: str) -> str:
+            return _env(env_key(name), mode_defaults[name])  # type: ignore[return-value]
+
+        if top_k is not None:
+            self.top_k = min(int(top_k), MAX_SEARCH_TOP_K)
+        else:
+            self.top_k = min(int(knob("TOP_K")), MAX_SEARCH_TOP_K)
 
         if multiquery is not None:
             self.multiquery = multiquery
         else:
-            self.multiquery = max(1, int(_env("MULTIQUERY", "2")))
+            self.multiquery = max(1, int(knob("MULTIQUERY")))
 
         if merge_top_k is not None:
             self.merge_top_k = merge_top_k
         else:
-            self.merge_top_k = max(1, int(_env("MERGE_TOP_K", "35")))
+            self.merge_top_k = max(1, int(knob("MERGE_TOP_K")))
 
         if category_adaptive is not None:
             self.category_adaptive = category_adaptive
         else:
-            self.category_adaptive = _env("CATEGORY_ADAPTIVE", "true").lower() in ("true", "1", "yes")
+            self.category_adaptive = knob("CATEGORY_ADAPTIVE").lower() in ("true", "1", "yes")
 
         self.commit_batch = max(1, int(_env("COMMIT_BATCH", str(commit_batch))))
         self.ingest_workers = max(1, int(_env("INGEST_WORKERS", str(ingest_workers))))

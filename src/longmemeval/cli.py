@@ -50,7 +50,7 @@ def run(
     judge_llm: str = typer.Option("gemini", "--judge", help="LLM for judging: gemini | openai | grok"),
     judge_model: Optional[str] = typer.Option(None, "--judge-model", help="Model name for judge LLM"),
     skip_ingest: bool = typer.Option(False, "--skip-ingest", help="Skip document ingestion (use existing store)"),
-    top_k: int = typer.Option(20, "--top-k", "-k", help="Retrieval top_k (max 200 for Caura; when category adaptive is active, uses category profiles)"),
+    top_k: Optional[int] = typer.Option(None, "--top-k", "-k", help="Retrieval top_k (max 200 for Caura). Default: provider profile (chars mode 20 + category profiles; turns mode flat 50)"),
     as_of_recall: bool = typer.Option(True, "--as-of-recall/--no-as-of-recall", help="Enable As-Of Recall: anchor temporal ranking and valid_at at question_date"),
     chunk_mode: Optional[str] = typer.Option(None, "--chunk-mode", help="Caura ingestion chunking: chars (4k parts, default) | turns (one memory per user statement + reply)"),
     chunk_chars: Optional[int] = typer.Option(None, "--chunk-chars", help="Max chunk size in characters (default 4000 for chars, 1200 for turns)"),

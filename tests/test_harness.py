@@ -79,6 +79,28 @@ def test_caura_category_adaptive_profiles():
     assert provider.chunk_chars == 4000
     assert provider.chunk_mode == "chars"
     assert provider.sibling_expansion is False
+    assert (provider.top_k, provider.multiquery, provider.merge_top_k) == (20, 2, 35)
+
+
+def test_turn_mode_defaults_to_flat_profile_with_sibling_expansion(monkeypatch):
+    from longmemeval.providers.caura import CauraMemoryProvider
+
+    # Legacy .env values for the 4k store must not leak into turn mode.
+    monkeypatch.setenv("CAURA_TOP_K", "20")
+    monkeypatch.setenv("CAURA_MULTIQUERY", "2")
+    monkeypatch.setenv("CAURA_CATEGORY_ADAPTIVE", "true")
+    monkeypatch.setenv("CAURA_CHUNK_CHARS", "4000")
+
+    p = CauraMemoryProvider(api_key="k", tenant_id="t", chunk_mode="turns")
+    assert p.chunk_chars == 1200
+    assert p.category_adaptive is False
+    assert (p.top_k, p.multiquery, p.merge_top_k) == (50, 1, 50)
+    assert p.sibling_expansion is True
+    assert p.sibling_window == 0
+
+    # Explicit args still win.
+    p2 = CauraMemoryProvider(api_key="k", tenant_id="t", chunk_mode="turns", top_k=30, multiquery=2, category_adaptive=True)
+    assert (p2.top_k, p2.multiquery, p2.category_adaptive) == (30, 2, True)
 
 
 def test_chunk_turns_groups_user_turn_with_reply_and_splits_long_replies():
