@@ -127,6 +127,10 @@ class Evaluator:
             "total_questions": total,
             "correct_questions": total_correct,
             "by_question_type": qtype_acc,
+            "judge_model": getattr(self.judge_llm, "model_name", "unknown"),
+            # Dated snapshot the provider actually served behind the alias, when it reports one.
+            "judge_model_resolved": getattr(self.judge_llm, "resolved_model", None),
+            "judge_prompts": "official LongMemEval evaluate_qa.py task-specific templates, unmodified",
             "results": [r.model_dump() for r in eval_results],
         }
 
@@ -146,26 +150,34 @@ def run_reader_pipeline(
     question_date: str | None = None,
     pipeline: str = "direct",
 ) -> tuple[str, float, dict[str, Any] | None]:
-    """Execute either direct generation or multi-stage agentic-v1 pipeline."""
+    """Execute either direct generation or multi-stage agentic-v1 pipeline.
+
+    Returns ``(answer, gen_ms, pipeline_trace, reader_usage)``. ``reader_usage`` is the
+    provider-reported token usage summed over every reader call for this question
+    (retries and fallbacks included), or None if the LLM does not report usage.
+    """
     t0_gen = time.perf_counter()
+    reader_llm.begin_usage()
 
     if pipeline == "agentic-v1":
         # Stage 1: Extract factual evidence and classify support status
         t0_stage = time.perf_counter()
-        evidence_bundle = reader_llm.extract_evidence(
-            question=question,
-            context=context,
-            question_date=question_date,
-        )
+        with reader_llm.usage_stage("extract"):
+            evidence_bundle = reader_llm.extract_evidence(
+                question=question,
+                context=context,
+                question_date=question_date,
+            )
         extract_ms = (time.perf_counter() - t0_stage) * 1000
 
         # Stage 2: Generate initial candidate from extracted evidence
         t0_stage = time.perf_counter()
-        initial_answer = reader_llm.answer_from_evidence(
-            question=question,
-            evidence=evidence_bundle,
-            question_date=question_date,
-        )
+        with reader_llm.usage_stage("answer"):
+            initial_answer = reader_llm.answer_from_evidence(
+                question=question,
+                evidence=evidence_bundle,
+                question_date=question_date,
+            )
         initial_ms = (time.perf_counter() - t0_stage) * 1000
 
         # Stage 3: Conditional narrow inference or temporal calculation
@@ -179,11 +191,12 @@ def run_reader_pipeline(
         )
         if should_infer and evidence_bundle.facts:
             t0_stage = time.perf_counter()
-            inference_answer = reader_llm.infer_answer(
-                question=question,
-                evidence=evidence_bundle,
-                question_date=question_date,
-            )
+            with reader_llm.usage_stage("infer"):
+                inference_answer = reader_llm.infer_answer(
+                    question=question,
+                    evidence=evidence_bundle,
+                    question_date=question_date,
+                )
             inference_ms = (time.perf_counter() - t0_stage) * 1000
         elif (evidence_bundle.status == "unsupported" or not evidence_bundle.facts) and context.strip():
             # If evidence extractor returned unsupported on a non-empty context,
@@ -194,18 +207,20 @@ def run_reader_pipeline(
                 context=context,
                 question_date=question_date,
             )
-            inference_answer = reader_llm.generate(direct_prompt)
+            with reader_llm.usage_stage("direct_fallback"):
+                inference_answer = reader_llm.generate(direct_prompt)
             inference_ms = (time.perf_counter() - t0_stage) * 1000
 
         # Stage 4: Verify and, if unsupported, hold back
         candidates = (initial_answer,) + ((inference_answer,) if inference_answer else ())
         t0_stage = time.perf_counter()
-        verified = reader_llm.verify_answer(
-            question=question,
-            evidence=evidence_bundle,
-            candidates=candidates,
-            question_date=question_date,
-        )
+        with reader_llm.usage_stage("verify"):
+            verified = reader_llm.verify_answer(
+                question=question,
+                evidence=evidence_bundle,
+                candidates=candidates,
+                question_date=question_date,
+            )
         verify_ms = (time.perf_counter() - t0_stage) * 1000
 
         if not evidence_bundle.facts and inference_answer:
@@ -239,11 +254,13 @@ def run_reader_pipeline(
             context=context,
             question_date=question_date,
         )
-        hypothesis_ans = reader_llm.generate(prompt)
+        with reader_llm.usage_stage("direct"):
+            hypothesis_ans = reader_llm.generate(prompt)
         pipeline_trace = None
 
     gen_ms = (time.perf_counter() - t0_gen) * 1000
-    return hypothesis_ans, gen_ms, pipeline_trace
+    reader_usage = reader_llm.end_usage()
+    return hypothesis_ans, gen_ms, pipeline_trace, reader_usage
 
 
 class BenchmarkRunner:
@@ -351,10 +368,12 @@ class BenchmarkRunner:
                 question_type=item.question_type,
             )
             retrieve_ms = (time.perf_counter() - t0_ret) * 1000
+            pop_stats = getattr(self.provider, "pop_retrieval_stats", None)
+            retrieval_stats = pop_stats() if callable(pop_stats) else None
 
             # 3. Generate answer
             context_text = format_facts(facts)
-            hypothesis_ans, gen_ms, pipeline_trace = run_reader_pipeline(
+            hypothesis_ans, gen_ms, pipeline_trace, reader_usage = run_reader_pipeline(
                 reader_llm=self.reader_llm,
                 question=item.question,
                 context=context_text,
@@ -373,6 +392,8 @@ class BenchmarkRunner:
                 generate_time_ms=gen_ms,
                 pipeline=pipeline,
                 pipeline_trace=pipeline_trace,
+                retrieval_stats=retrieval_stats or None,
+                reader_usage=reader_usage,
             )
 
             with file_lock:
@@ -419,10 +440,14 @@ class BenchmarkRunner:
         finished_at = datetime.now(timezone.utc)
         duration_s = (finished_at - started_at).total_seconds()
 
+        server_info_fn = getattr(self.provider, "server_info", None)
+        server_info = server_info_fn() if callable(server_info_fn) else None
+
         # Build comprehensive benchmark result payload and generate stunning HTML report
         run_meta = {
             "name": effective_name,
             "provider": self.provider.name,
+            "server": server_info,
             "started_at": started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
             "duration_seconds": duration_s,
@@ -456,6 +481,8 @@ class BenchmarkRunner:
                     "sibling_expansion": getattr(self.provider, "sibling_expansion", None),
                     "context_budget_chars": getattr(self.provider, "context_budget_chars", None),
                     "sibling_window": getattr(self.provider, "sibling_window", None),
+                    "raw_turns_only": getattr(self.provider, "raw_turns_only", None),
+                    "multiquery": getattr(self.provider, "multiquery", None),
                     "as_of_recall": getattr(self.provider, "send_valid_at", False),
                     "valid_at": getattr(self.provider, "send_valid_at", False),
                     "context_ordering": "Chronological (oldest to newest)",

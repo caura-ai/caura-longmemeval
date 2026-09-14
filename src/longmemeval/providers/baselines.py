@@ -7,8 +7,23 @@ from ..models import MemoryDocument, RetrievedFact
 from .base import BaseMemoryProvider
 
 
+def _as_facts(docs: list[MemoryDocument]) -> list[RetrievedFact]:
+    return [
+        RetrievedFact(
+            id=d.id,
+            content=(f"{d.context}\n{d.content}" if d.context else d.content),
+            score=1.0,
+            timestamp=d.timestamp,
+        )
+        for d in docs
+    ]
+
+
 class OracleMemoryProvider(BaseMemoryProvider):
-    """Oracle memory provider: retrieves only gold answer turns/sessions."""
+    """Oracle baseline: the reader sees exactly the question's answer sessions
+    (``MemoryDocument.is_gold``), whole, in chronological order. Abstention
+    questions have no gold session and get an empty context. ``top_k`` is
+    ignored; this is the reader's ceiling given perfect retrieval."""
 
     name = "oracle"
 
@@ -19,7 +34,35 @@ class OracleMemoryProvider(BaseMemoryProvider):
         self._store.pop(unit_id, None)
 
     def ingest(self, unit_id: str, documents: list[MemoryDocument]) -> int:
-        self._store[unit_id] = documents
+        gold = [d for d in documents if d.is_gold]
+        self._store[unit_id] = gold
+        return len(gold)
+
+    def retrieve(
+        self,
+        unit_id: str,
+        query: str,
+        top_k: int = 20,
+        query_date: str | None = None,
+        question_type: str | None = None,
+    ) -> list[RetrievedFact]:
+        return _as_facts(self._store.get(unit_id, []))
+
+
+class FullContextMemoryProvider(BaseMemoryProvider):
+    """Full-context baseline: no retrieval at all, the reader sees the whole
+    haystack (every session, chronological). ``top_k`` is ignored."""
+
+    name = "fullcontext"
+
+    def __init__(self):
+        self._store: dict[str, list[MemoryDocument]] = {}
+
+    def reset_unit(self, unit_id: str) -> None:
+        self._store.pop(unit_id, None)
+
+    def ingest(self, unit_id: str, documents: list[MemoryDocument]) -> int:
+        self._store[unit_id] = list(documents)
         return len(documents)
 
     def retrieve(
@@ -30,17 +73,7 @@ class OracleMemoryProvider(BaseMemoryProvider):
         query_date: str | None = None,
         question_type: str | None = None,
     ) -> list[RetrievedFact]:
-        # Return all documents stored for this unit
-        docs = self._store.get(unit_id, [])
-        return [
-            RetrievedFact(
-                id=d.id,
-                content=d.content,
-                score=1.0,
-                timestamp=d.timestamp,
-            )
-            for d in docs[:top_k]
-        ]
+        return _as_facts(self._store.get(unit_id, []))
 
 
 class KeywordBM25MemoryProvider(BaseMemoryProvider):

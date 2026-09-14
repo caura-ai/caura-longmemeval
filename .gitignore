@@ -4,8 +4,22 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.ruff_cache/
 .env
 data/
-outputs/
 results/
 .DS_Store
+
+# Run outputs are ignored by default; the runs a published number rests on are
+# committed explicitly (hypotheses with saved contexts, every judge file,
+# results.json, report.html, coverage and token tables).
+outputs/*
+!outputs/caura-500-agentic-v1/
+!outputs/caura-500-turns/
+!outputs/caura-500-turns-0914/
+!outputs/caura-500-turns-prompts-v2/
+!outputs/caura-500-opaque/
+!outputs/caura-500-opaque-run2/
+!outputs/oracle-500-agentic-v1/
+outputs/*/*.bak
+outputs/*/*.log

@@ -206,6 +206,7 @@ class CauraMemoryProvider(BaseMemoryProvider):
         sibling_expansion: bool | None = None,
         context_budget_chars: int | None = None,
         sibling_window: int | None = None,
+        raw_turns_only: bool | None = None,
     ):
         self.base_url = (base_url or _env("BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
         self.api_key = api_key or _env("API_KEY")
@@ -250,6 +251,18 @@ class CauraMemoryProvider(BaseMemoryProvider):
             self.sibling_window = max(0, int(sibling_window))
         else:
             self.sibling_window = max(0, int(_env("SIBLING_WINDOW", "0")))
+        # The server derives its own memories (facts, preferences, tasks ...) from
+        # what we write, asynchronously, with its own LLM. /search returns them
+        # mixed with our stored chunks. ``raw_turns_only`` drops anything that is
+        # not one of our chunks (no ``metadata.doc_id``) so the reader sees only
+        # source text; how many were dropped is reported by ``pop_retrieval_stats``.
+        if raw_turns_only is not None:
+            self.raw_turns_only = bool(raw_turns_only)
+        elif self.chunk_mode == "turns":
+            self.raw_turns_only = _env("TURN_RAW_ONLY", "1").lower() in ("1", "true", "yes")
+        else:
+            self.raw_turns_only = _env("RAW_ONLY", "0").lower() in ("1", "true", "yes")
+        self._retrieval_stats = threading.local()  # per worker thread; the runner is concurrent
         self._listing_supported: bool | None = None
 
         env_bulk = _env("BULK_SIZE")
@@ -613,8 +626,13 @@ class CauraMemoryProvider(BaseMemoryProvider):
         return list(seen.values())
 
     def _siblings_by_search(self, agent_id: str, doc_id: str, valid_at: str | None) -> list[dict]:
-        """Fallback: find a session's chunks by searching for its header string."""
-        items = self._search_once(f"Session {doc_id}", agent_id, top_k=60, valid_at=valid_at)
+        """Fallback: find a session's chunks by searching for its header string.
+
+        The header shows only the opaque session label (the part of ``doc_id``
+        after the last underscore); the question id never reaches stored text.
+        """
+        label = doc_id.rsplit("_", 1)[-1]
+        items = self._search_once(f"Session {label}", agent_id, top_k=60, valid_at=valid_at)
         return [it for it in items if (it.get("metadata") or {}).get("doc_id") == doc_id]
 
     def _expand_siblings(
@@ -763,6 +781,16 @@ class CauraMemoryProvider(BaseMemoryProvider):
                     best.setdefault(mid, item)
             raw_items = [best[mid] for mid in sorted(fused, key=lambda i: fused[i], reverse=True)]
 
+        n_candidates = len(raw_items)
+        n_derived = sum(1 for it in raw_items if not (it.get("metadata") or {}).get("doc_id"))
+        if self.raw_turns_only:
+            raw_items = [it for it in raw_items if (it.get("metadata") or {}).get("doc_id")]
+        self._retrieval_stats.value = {
+            "search_candidates": n_candidates,
+            "server_derived_candidates": n_derived,
+            "server_derived_dropped": n_derived if self.raw_turns_only else 0,
+        }
+
         effective_limit = max(target_top_k, target_merge_top_k) if target_multiquery > 1 else target_top_k
         if self.sibling_expansion:
             # Budget-governed: walk the whole candidate list; the per-session
@@ -787,6 +815,34 @@ class CauraMemoryProvider(BaseMemoryProvider):
                 )
             )
         return results
+
+    def server_info(self) -> dict:
+        """Server version and model configuration (GET /status), for run metadata."""
+        try:
+            resp = self._request("GET", "/status", retries=1)
+            if resp.status_code != 200:
+                return {"base_url": self.base_url, "status_code": resp.status_code}
+            body = resp.json()
+            search = {}
+            settings = self._request("GET", "/settings", retries=1)
+            if settings.status_code == 200:
+                search = (settings.json().get("search") or {}).get("default_profile") or {}
+            return {
+                "base_url": self.base_url,
+                "version": body.get("version"),
+                "plugin_version": body.get("plugin_version"),
+                "server_llm": body.get("llm"),
+                "embedding": body.get("embedding"),
+                "search_default_profile": search,
+            }
+        except Exception as exc:  # metadata only; never fail a run over it
+            return {"base_url": self.base_url, "error": str(exc)[:200]}
+
+    def pop_retrieval_stats(self) -> dict[str, int]:
+        """Stats of the last ``retrieve`` on the calling thread (candidate and server-derived counts)."""
+        stats = getattr(self._retrieval_stats, "value", None) or {}
+        self._retrieval_stats.value = None
+        return dict(stats)
 
     def cleanup(self, unit_id: str | None = None) -> None:
         if unit_id:

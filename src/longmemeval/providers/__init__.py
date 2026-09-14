@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from .base import BaseMemoryProvider
 from .caura import CauraMemoryProvider
-from .baselines import OracleMemoryProvider, KeywordBM25MemoryProvider
+from .baselines import FullContextMemoryProvider, OracleMemoryProvider, KeywordBM25MemoryProvider
 
 PROVIDERS: dict[str, type[BaseMemoryProvider]] = {
     "caura": CauraMemoryProvider,
     "oracle": OracleMemoryProvider,
+    "fullcontext": FullContextMemoryProvider,
     "bm25": KeywordBM25MemoryProvider,
 }
 

@@ -25,21 +25,57 @@ def test_models():
     ds = LongMemEvalDataset()
     docs = ds.item_to_documents(item)
     assert len(docs) == 1
-    assert docs[0].id == "test_q1_s1"
     assert "Paris" in docs[0].content
 
 
+def test_documents_carry_no_dataset_labels():
+    """Gold sessions are named answer_<hash> and abstention questions <id>_abs in the
+    dataset; neither may reach the stored text or its header."""
+    from longmemeval.dataset import opaque_session_id
+
+    item = LongMemEvalItem(
+        question_id="abc123_abs",
+        question="What is my cat called?",
+        answer="N/A",
+        question_type="single-session-user",
+        question_date="2024/08/01",
+        haystack_sessions=[
+            [{"role": "user", "content": "I adopted a dog.", "has_answer": True}],
+            [{"role": "user", "content": "Weather is nice."}],
+        ],
+        haystack_dates=["2024/07/15 (Mon) 10:00", "2024/07/16 (Tue) 10:00"],
+        haystack_session_ids=["answer_deadbeef", "sharegpt_x_0"],
+    )
+    docs = LongMemEvalDataset().item_to_documents(item)
+    labels = [opaque_session_id(item.question_id, sid) for sid in item.haystack_session_ids]
+    for doc, label in zip(docs, labels):
+        assert doc.id == f"abc123_abs_{label}"  # bookkeeping id keeps the question id
+        assert doc.context == f"Session {label} - happened on {doc.timestamp[:10]} {doc.timestamp[11:19]} UTC."
+        for leak in ("answer_", "deadbeef", "sharegpt", "_abs", "abc123"):
+            assert leak not in doc.context
+            assert leak not in doc.content
+    # Same shape for gold and distractor labels; deterministic across calls.
+    assert len(set(labels)) == 2 and all(len(l) == 12 for l in labels)
+    assert opaque_session_id("q", "s") == opaque_session_id("q", "s")
+
+
 def test_baseline_providers():
-    oracle = OracleMemoryProvider()
+    from longmemeval.providers.baselines import FullContextMemoryProvider
+
     docs = [
-        MemoryDocument(id="d1", content="Fact 1", user_id="u1"),
+        MemoryDocument(id="d1", content="Fact 1", user_id="u1", is_gold=True),
         MemoryDocument(id="d2", content="Fact 2", user_id="u1"),
     ]
-    stored = oracle.ingest("u1", docs)
-    assert stored == 2
+    # Oracle: gold sessions only, top_k ignored.
+    oracle = OracleMemoryProvider()
+    assert oracle.ingest("u1", docs) == 1
+    ret = oracle.retrieve("u1", "Fact 1", top_k=1)
+    assert [r.id for r in ret] == ["d1"]
 
-    ret = oracle.retrieve("u1", "Fact 1")
-    assert len(ret) == 2
+    # Full context: everything, top_k ignored.
+    full = FullContextMemoryProvider()
+    assert full.ingest("u1", docs) == 2
+    assert [r.id for r in full.retrieve("u1", "anything", top_k=1)] == ["d1", "d2"]
 
     bm25 = KeywordBM25MemoryProvider()
     bm25.ingest("u1", docs)
@@ -62,6 +98,32 @@ def test_prompts():
     assert "knowledge-update" not in judge_p  # Template itself
     assert "Doctor" in judge_p
     assert "Answer yes or no only" in judge_p
+
+
+def test_reader_prompts_contain_no_dataset_examples():
+    """The reader prompts were iterated against failures on this set; the examples
+    they carry must be generic or synthetic, never lifted from LongMemEval items."""
+    from longmemeval.prompts import (
+        build_evidence_answer_prompt,
+        build_extract_evidence_prompt,
+        build_infer_answer_prompt,
+        build_verify_answer_prompt,
+    )
+
+    templates = " ".join([
+        build_extract_evidence_prompt("Q", "CTX", "D"),
+        build_evidence_answer_prompt("Q", "EV", "D"),
+        build_infer_answer_prompt("Q", "EV", "D"),
+        build_verify_answer_prompt("Q", "EV", ("C1",), "D"),
+    ]).lower()
+    # Terms that were lifted from specific test questions in an earlier version.
+    lifted = [
+        "slow cooker", "beef stew", "yogurt", "mortgage", "pre-approval", "feb 14", "feb 15",
+        "consecutive days", "chicago", "suburbs", "suggest a hotel", "target,", "cartwheel",
+        "healthcare ai", "avoid screens", "led 2 projects", "never classify recommendation",
+    ]
+    hits = [t for t in lifted if t in templates]
+    assert not hits, f"dataset-lifted wording in reader prompts: {hits}"
 
 
 def test_caura_category_adaptive_profiles():
@@ -179,6 +241,31 @@ def test_sibling_expansion_completes_best_ranked_sessions_within_budget(monkeypa
     ids = set(s["id"] for s in selected)
     assert "a1" in ids and "a2" not in ids
     assert {"b0", "b1", "b2", "c0", "c1"} <= ids
+
+
+def test_raw_turns_only_drops_server_derived_search_hits(monkeypatch):
+    from longmemeval.providers.caura import CauraMemoryProvider
+
+    provider = CauraMemoryProvider(
+        api_key="k", tenant_id="t", chunk_mode="turns", sibling_expansion=False, send_valid_at=False,
+    )
+    assert provider.raw_turns_only is True  # default in turn mode
+
+    stored = {"id": "m1", "content": "User: I adopted a dog.", "metadata": {"doc_id": "q1_abc", "chunk": 0}}
+    derived = {"id": "d1", "content": "User owns a dog.", "memory_type": "fact", "metadata": {}}
+    monkeypatch.setattr(provider, "_search_once", lambda *a, **k: [derived, stored, derived | {"id": "d2"}])
+
+    facts = provider.retrieve("q1", "what pet do I have?")
+    assert [f.id for f in facts] == ["m1"]
+    assert provider.pop_retrieval_stats() == {
+        "search_candidates": 3, "server_derived_candidates": 2, "server_derived_dropped": 2,
+    }
+    assert provider.pop_retrieval_stats() == {}  # consumed
+
+    provider.raw_turns_only = False
+    facts = provider.retrieve("q1", "what pet do I have?")
+    assert [f.id for f in facts] == ["d1", "m1", "d2"]
+    assert provider.pop_retrieval_stats()["server_derived_dropped"] == 0
 
 
 def test_judge_protocol_defaults_and_overrides(monkeypatch):

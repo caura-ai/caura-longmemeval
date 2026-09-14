@@ -23,6 +23,8 @@ class DummyLLM(BaseLLM):
 
     def generate(self, prompt: str, **kwargs: Any) -> str:
         self.call_history.append(prompt)
+        # Report usage like a real provider would: 1 prompt token per 4 chars, 5 completion tokens.
+        self._record_usage(len(prompt) // 4, 5)
         for key, resp in self.responses.items():
             if key in prompt:
                 return resp
@@ -98,7 +100,7 @@ def test_run_reader_pipeline_agentic_flow():
     }
     llm = DummyLLM(responses=dummy_responses)
 
-    ans, gen_ms, trace = run_reader_pipeline(
+    ans, gen_ms, trace, usage = run_reader_pipeline(
         reader_llm=llm,
         question="What is the dog's name?",
         context="Fact A: The dog name is Barnaby.",
@@ -111,6 +113,16 @@ def test_run_reader_pipeline_agentic_flow():
     assert trace["evidence_status"] == "direct"
     assert "Fact A: The dog name is Barnaby." in trace["facts"]
     assert trace["verifier_reason"] == "Verified from Fact A."
+
+    # Exact reader accounting: one call per stage here (extract, answer, verify), all summed.
+    assert usage["n_calls"] == 3 == len(llm.call_history)
+    assert [c["stage"] for c in usage["calls"]] == ["extract", "answer", "verify"]
+    assert usage["prompt_tokens"] == sum(len(p) // 4 for p in llm.call_history)
+    assert usage["completion_tokens"] == 15
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+    # Accounting is closed after the question; stray calls are not attributed to it.
+    llm.generate("unrelated")
+    assert llm.end_usage() is None
 
 
 def test_extract_question_ids_from_file(tmp_path: Path):

@@ -124,6 +124,7 @@ def run(
     sibling_expansion: Optional[bool] = typer.Option(None, "--sibling-expansion/--no-sibling-expansion", help="After ranking, pull the other chunks of each hit's session into the context (budgeted)"),
     context_budget: Optional[int] = typer.Option(None, "--context-budget", help="Character budget for the retrieved context when sibling expansion is on (default 150000)"),
     sibling_window: Optional[int] = typer.Option(None, "--sibling-window", help="Neighbouring chunks per side to pull around each hit (default 0 = whole session)"),
+    raw_turns_only: Optional[bool] = typer.Option(None, "--raw-turns-only/--allow-derived", help="Drop server-derived memories (no metadata.doc_id) from /search results so the reader sees only stored source text (default on in turns mode)"),
     agent_prefix: Optional[str] = typer.Option(None, "--agent-prefix", help="Caura agent-id prefix; use a fresh prefix to ingest into a separate store without touching an existing one"),
     bulk_size: Optional[int] = typer.Option(None, "--bulk-size", help="Items per /memories/bulk call (max 100); raise for fine-grained chunking"),
     pipeline: str = typer.Option("direct", "--pipeline", help="Pipeline architecture: direct | agentic-v1"),
@@ -146,6 +147,8 @@ def run(
         provider_kwargs["context_budget_chars"] = context_budget
     if sibling_window is not None:
         provider_kwargs["sibling_window"] = sibling_window
+    if raw_turns_only is not None:
+        provider_kwargs["raw_turns_only"] = raw_turns_only
     if agent_prefix is not None:
         provider_kwargs["agent_prefix"] = agent_prefix
     if bulk_size is not None:
@@ -332,7 +335,7 @@ def rerun_pipeline(
             item = items_by_id.get(src.question_id)
             q_date = item.question_date if item else None
 
-            hypothesis_ans, gen_ms, pipeline_trace = run_reader_pipeline(
+            hypothesis_ans, gen_ms, pipeline_trace, reader_usage = run_reader_pipeline(
                 reader_llm=reader,
                 question=src.question,
                 context=src.context,
@@ -351,6 +354,8 @@ def rerun_pipeline(
                 generate_time_ms=gen_ms,
                 pipeline=pipeline,
                 pipeline_trace=pipeline_trace,
+                retrieval_stats=src.retrieval_stats,
+                reader_usage=reader_usage,
             )
             return idx, entry
 

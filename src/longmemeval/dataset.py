@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -80,6 +81,17 @@ def parse_timestamp(date_str: str) -> datetime | None:
         return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def opaque_session_id(question_id: str, session_id: str) -> str:
+    """Deterministic 12-hex label for a haystack session.
+
+    Same shape for gold (``answer_*``), ShareGPT, UltraChat and distractor
+    sessions, so nothing about the label tells the reader which one it is.
+    Deterministic so analysis tooling (coverage, sibling lookup) can map it
+    back from the dataset without a side table.
+    """
+    return hashlib.sha1(f"{question_id}/{session_id}".encode("utf-8")).hexdigest()[:12]
 
 
 def extract_question_ids_from_file(file_path: Path | str) -> set[str]:
@@ -206,15 +218,26 @@ class LongMemEvalDataset:
         return items
 
     def item_to_documents(self, item: LongMemEvalItem) -> list[MemoryDocument]:
-        """Convert an item's haystack sessions into MemoryDocuments."""
+        """Convert an item's haystack sessions into MemoryDocuments.
+
+        The stored text never carries a dataset label. LongMemEval names every
+        gold session ``answer_<hash>`` and abstention questions ``<id>_abs``, so
+        neither the session id nor the question id may appear in anything the
+        reader can see. Each session gets an opaque label (``opaque_session_id``),
+        which is what the memory header shows; the dataset ids stay only in
+        ``MemoryDocument.id`` (``<question_id>_<opaque>``) for store bookkeeping.
+        """
         docs: list[MemoryDocument] = []
         sessions = item.haystack_sessions
         dates = item.haystack_dates
         sids = item.haystack_session_ids
 
+        gold_sids = set(item.other_attributes.get("answer_session_ids") or [])
+
         min_len = min(len(sessions), len(dates), len(sids))
         for sess, d_str, sid in zip(sessions[:min_len], dates[:min_len], sids[:min_len]):
-            doc_id = f"{item.question_id}_{sid}"
+            label = opaque_session_id(item.question_id, sid)
+            doc_id = f"{item.question_id}_{label}"
             lines: list[str] = []
             for t in sess:
                 if not isinstance(t, dict):
@@ -228,7 +251,7 @@ class LongMemEvalDataset:
             dt = parse_timestamp(d_str)
             dt_iso = dt.isoformat() if dt else None
             date_display = dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "unknown"
-            ctx = f"Session {doc_id} - happened on {date_display} UTC."
+            ctx = f"Session {label} - happened on {date_display} UTC."
 
             docs.append(
                 MemoryDocument(
@@ -237,6 +260,7 @@ class LongMemEvalDataset:
                     user_id=item.question_id,
                     timestamp=dt_iso,
                     context=ctx,
+                    is_gold=sid in gold_sids,
                 )
             )
         return docs

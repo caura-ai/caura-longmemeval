@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
+from contextlib import contextmanager
 from typing import Any
 from rich.console import Console
 
@@ -88,10 +90,70 @@ def _dedupe_facts(facts: list[str], limit: int, drop_meta_negative: bool = False
 
 
 class BaseLLM:
-    """Base LLM interface."""
+    """Base LLM interface.
+
+    Token accounting: every provider-reported usage block is appended to a
+    per-thread list between ``begin_usage()`` and ``end_usage()``, tagged with
+    the current ``usage_stage``. The runner brackets one question with these so
+    the exact reader tokens per question (all calls, retries included) land in
+    the hypotheses file.
+    """
+
+    _usage = threading.local()
 
     def generate(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.0) -> str:
         raise NotImplementedError
+
+    # ------------------------------------------------------------- usage accounting
+    def begin_usage(self) -> None:
+        self._usage.calls = []
+        self._usage.stage = None
+
+    @contextmanager
+    def usage_stage(self, stage: str):
+        prev = getattr(self._usage, "stage", None)
+        self._usage.stage = stage
+        try:
+            yield
+        finally:
+            self._usage.stage = prev
+
+    def _record_usage(
+        self,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+        reasoning_tokens: int | None = None,
+        total_tokens: int | None = None,
+    ) -> None:
+        calls = getattr(self._usage, "calls", None)
+        if calls is None:
+            return
+        p = int(prompt_tokens or 0)
+        c = int(completion_tokens or 0)
+        r = int(reasoning_tokens or 0)
+        calls.append({
+            "stage": getattr(self._usage, "stage", None),
+            "prompt_tokens": p,
+            "completion_tokens": c,
+            "reasoning_tokens": r,
+            "total_tokens": int(total_tokens) if total_tokens is not None else p + c + r,
+        })
+
+    def end_usage(self) -> dict[str, Any] | None:
+        calls = getattr(self._usage, "calls", None)
+        self._usage.calls = None
+        if calls is None:
+            return None
+        summary: dict[str, Any] = {
+            "model": getattr(self, "model_name", None),
+            "n_calls": len(calls),
+            "prompt_tokens": sum(c["prompt_tokens"] for c in calls),
+            "completion_tokens": sum(c["completion_tokens"] for c in calls),
+            "reasoning_tokens": sum(c["reasoning_tokens"] for c in calls),
+            "total_tokens": sum(c["total_tokens"] for c in calls),
+            "calls": calls,
+        }
+        return summary
 
     def judge_bool(self, prompt: str) -> tuple[bool, str]:
         """Returns (is_correct, explanation)."""
@@ -272,6 +334,17 @@ class GeminiLLM(BaseLLM):
                         automatic_function_calling=self.types.AutomaticFunctionCallingConfig(disable=True),
                     ),
                 )
+                resolved = getattr(resp, "model_version", None)
+                if resolved:
+                    self.resolved_model = resolved
+                um = getattr(resp, "usage_metadata", None)
+                if um is not None:
+                    self._record_usage(
+                        getattr(um, "prompt_token_count", None),
+                        getattr(um, "candidates_token_count", None),
+                        getattr(um, "thoughts_token_count", None),
+                        getattr(um, "total_token_count", None),
+                    )
                 return resp.text or ""
             except Exception as exc:
                 if attempt == 4:
@@ -330,6 +403,15 @@ class OpenAILLM(BaseLLM):
             messages=[{"role": "user", "content": prompt}],
             **self._request_kwargs(max_tokens, temperature),
         )
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            details = getattr(usage, "completion_tokens_details", None)
+            self._record_usage(
+                getattr(usage, "prompt_tokens", None),
+                getattr(usage, "completion_tokens", None),
+                getattr(details, "reasoning_tokens", None) if details is not None else None,
+                getattr(usage, "total_tokens", None),
+            )
         return resp.choices[0].message.content or ""
 
     def judge_bool(self, prompt: str) -> tuple[bool, str]:
@@ -338,6 +420,11 @@ class OpenAILLM(BaseLLM):
             messages=[{"role": "user", "content": prompt}],
             **self._request_kwargs(64, 0.0),
         )
+        # The API answers with the dated snapshot behind an alias (e.g. gpt-4o -> gpt-4o-2024-08-06);
+        # keep it so the verdict files pin the exact judge version.
+        resolved = getattr(resp, "model", None)
+        if resolved:
+            self.resolved_model = resolved
         content = resp.choices[0].message.content or ""
         label = "yes" in content.lower()
         return label, content

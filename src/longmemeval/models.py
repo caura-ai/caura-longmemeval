@@ -57,6 +57,9 @@ class MemoryDocument(BaseModel):
     user_id: str  # maps to question_id in LongMemEval for per-question isolation
     timestamp: str | None = None
     context: str | None = None
+    # Dataset label: this session is one of the question's answer sessions. Used only
+    # by the in-process oracle baseline; the Caura provider never reads or sends it.
+    is_gold: bool = False
 
 
 class RetrievedFact(BaseModel):
@@ -80,6 +83,12 @@ class HypothesisEntry(BaseModel):
     generate_time_ms: float = 0.0
     pipeline: str | None = "direct"
     pipeline_trace: dict[str, Any] | None = None
+    # Provider-side counters for this question (e.g. how many /search candidates
+    # were server-derived memories and whether they were dropped).
+    retrieval_stats: dict[str, Any] | None = None
+    # Provider-reported reader token usage summed over every call for this question
+    # (extract/answer/infer/verify, retries and fallbacks included). None if unreported.
+    reader_usage: dict[str, Any] | None = None
 
 
 class EvaluationResult(BaseModel):
