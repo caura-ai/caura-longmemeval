@@ -7,8 +7,12 @@ __pycache__/
 .ruff_cache/
 .env
 data/
+datasets/
 results/
 .DS_Store
+
+# Internal write-ups live outside the public repository.
+reports/
 
 # Run outputs are ignored by default; the runs a published number rests on are
 # committed explicitly (hypotheses with saved contexts, every judge file,

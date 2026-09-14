@@ -30,7 +30,7 @@ uv sync
 
 ### Environment Configuration
 
-Copy `.env.example` to `.env` (already created with your project credentials if initialized):
+Copy `.env.example` to `.env` and fill in your credentials:
 
 ```ini
 # Caura API credentials
