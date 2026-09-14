@@ -97,7 +97,7 @@ uv run python scripts/context_tokens.py outputs/caura-500-opaque
 | `caura-500-turns-0914` | 14 Sep 2026 | same `lmet` store, fresh retrieval + generation | variance run of the above (same configuration) | 91.0 | 89.4 |
 | `caura-500-turns-prompts-v2` | 14 Sep 2026 | saved `caura-500-turns` contexts | reader prompts with dataset-lifted examples removed, re-run on frozen contexts (`rerun-pipeline`) | 90.8 | 89.8 |
 | `caura-500-opaque` | 14 Sep 2026 | turn granularity (`lmeo`), opaque labels, derived memories dropped, new prompts | **headline**: all three review fixes applied | **91.6** | 89.8 |
-| `caura-500-opaque-run2` | 14 Sep 2026 | same `lmeo` store, fresh retrieval + generation | variance run of the headline (identical configuration) | see `eval_results.json` | |
+| `caura-500-opaque-run2` | 14 Sep 2026 | same `lmeo` store, fresh retrieval + generation | variance run of the headline (identical configuration; same gold-turn coverage, 863/886) | 92.0 | 89.2 |
 | `oracle-500-agentic-v1` | 14 Sep 2026 | no store: reader gets exactly the answer sessions | reader ceiling under perfect retrieval (`--provider oracle`) | 94.6 | 92.8 |
 
 Scores are accuracy over all 500 questions from each run's `eval_results.json`
