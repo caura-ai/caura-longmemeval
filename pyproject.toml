@@ -1,5 +1,5 @@
 [project]
-name = "yanki-longmemeval"
+name = "caura-longmemeval"
 version = "0.1.0"
 description = "LongMemEval benchmark harness for Caura.ai memory platform"
 readme = "README.md"
