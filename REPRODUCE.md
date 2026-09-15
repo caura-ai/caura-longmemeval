@@ -70,6 +70,34 @@ Effective retrieval configuration (turn-mode defaults, all recorded in `results.
 | category logic | none (`category_adaptive` false); the question type is never read |
 | reader pipeline | `agentic-v1`: extract evidence from the full context, draft, conditional infer / direct fallback, verify. Exact per-call token usage recorded in `hypotheses.jsonl -> reader_usage` |
 
+## Context layout (`--context-format`)
+
+`full` (the headline run) hands the reader every retrieved chunk as stored: its own
+`[date | context: Session <label> - happened on <date> UTC. | turn i/n]` header line, the
+text, then a `date:` / `type:` trailer and a `---` separator. On the turn store that
+bookkeeping, plus the `(in reply to) <user turn>` prefix that split replies carry for the
+embedding, is about a third of the characters and, because ISO timestamps and hex labels
+tokenize badly, about half the tokens.
+
+`compact` carries the same stored text with the bookkeeping removed: chunks grouped by
+session and ordered by turn, one `Session <label>, <date> UTC` header per session, no
+trailers, and a split reply's `(in reply to)` prefix dropped when the user turn it repeats
+is already in the same session block (kept otherwise). No text is summarised, reworded or
+removed; `tests/test_context_format.py` checks the lossless property and the round trip.
+`rerun-pipeline --context-format compact` re-lays-out saved `full` contexts offline, so
+the layout can be tested on frozen retrieval:
+
+```bash
+uv run longmemeval rerun-pipeline outputs/caura-500-opaque/hypotheses.jsonl \
+    --name caura-500-opaque-compact --context-format compact --pipeline agentic-v1 \
+    --reader gemini --reader-model gemini-3.8-flash --judge openai --judge-model gpt-4o \
+    --secondary-judge gemini --secondary-judge-model gemini-3.5-flash-lite --concurrency 5
+```
+
+Percentiles in `scripts/context_tokens.py` and its `context_tokens.json -> summary` block
+are `sorted(values)[int(0.95 * n)]`, so a one-line recomputation from the cached file
+matches the printed table.
+
 ## Judging an existing run with another judge
 
 ```bash
@@ -99,6 +127,7 @@ uv run python scripts/context_tokens.py outputs/caura-500-opaque
 | `caura-500-opaque` | 14 Sep 2026 | turn granularity (`lmeo`), opaque labels, derived memories dropped, new prompts | **headline**: all three review fixes applied | **91.6** | 89.8 |
 | `caura-500-opaque-run2` | 14 Sep 2026 | same `lmeo` store, fresh retrieval + generation | variance run of the headline (identical configuration; same gold-turn coverage, 863/886) | 92.0 | 89.2 |
 | `oracle-500-agentic-v1` | 14 Sep 2026 | no store: reader gets exactly the answer sessions | reader ceiling under perfect retrieval (`--provider oracle`) | 94.6 | 92.8 |
+| `caura-500-opaque-compact` | 15 Sep 2026 | saved `caura-500-opaque` contexts, re-laid-out with `--context-format compact` | same retrieved text, half the reader tokens (26.5k vs 52.7k median total; 22.4k vs 48.6k context) | 92.2 | 90.2 |
 
 Scores are accuracy over all 500 questions from each run's `eval_results.json`
 (GPT-4o) and `eval_results_gemini35flashlite.json`. `caura-500-turns` and

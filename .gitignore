@@ -24,6 +24,7 @@ outputs/*
 !outputs/caura-500-turns-prompts-v2/
 !outputs/caura-500-opaque/
 !outputs/caura-500-opaque-run2/
+!outputs/caura-500-opaque-compact/
 !outputs/oracle-500-agentic-v1/
 outputs/*/*.bak
 outputs/*/*.log
