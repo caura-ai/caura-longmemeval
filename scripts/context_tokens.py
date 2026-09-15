@@ -45,11 +45,15 @@ from longmemeval.prompts import (  # noqa: E402
 
 
 def pct(values: list[float], p: float) -> float:
+    """Percentile as the element at index floor(p * n) of the sorted values.
+
+    This is what a one-liner over the cached JSON gives (``sorted(v)[int(0.95 * len(v))]``),
+    so the printed table and an independent recomputation agree to the digit.
+    """
     if not values:
         return float("nan")
     s = sorted(values)
-    k = min(len(s) - 1, max(0, int(round(p * (len(s) - 1)))))
-    return s[k]
+    return s[min(len(s) - 1, int(p * len(s)))]
 
 
 class Counter:
@@ -206,7 +210,27 @@ def main() -> None:
         delta = (0.25 / ratio - 1) * 100
         verb = "underestimates" if delta < 0 else "overestimates"
         print(f"\ntokens per character (median contexts): {ratio:.3f}   ->  chars/4 {verb} tokens by {abs(delta):.0f}%")
-    print(f"Cached per-question counts: {cache_path}")
+
+    def summ(v: list[float]) -> dict[str, float] | None:
+        if not v:
+            return None
+        return {"median": statistics.median(v), "p95": pct(v, .95), "max": max(v), "n": len(v)}
+
+    summary = {
+        "percentile_definition": "p95 = sorted(values)[int(0.95 * n)]",
+        "context_chars": summ(ctx_chars),
+        "context_tokens": summ(ctx_tok),
+        "reader_calls": summ(calls),
+        "reader_prompt_tokens": summ(prompt_tok),
+        "reader_completion_tokens": summ(comp_tok),
+        "reader_total_tokens": summ(total_tok),
+        "retrieve_ms": summ(ret_ms),
+        "generate_ms": summ(gen_ms),
+        "tokens_per_char_median": ratio,
+        "reader_tokens_exact": exact,
+    }
+    cache_path.write_text(json.dumps({"model": args.model, "summary": summary, "questions": rows}, indent=0), encoding="utf-8")
+    print(f"Cached per-question counts and summary: {cache_path}")
 
 
 if __name__ == "__main__":

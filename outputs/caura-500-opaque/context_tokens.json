@@ -1,5 +1,58 @@
 {
 "model": "gemini-3.8-flash",
+"summary": {
+"percentile_definition": "p95 = sorted(values)[int(0.95 * n)]",
+"context_chars": {
+"median": 157448.5,
+"p95": 164104,
+"max": 167072,
+"n": 500
+},
+"context_tokens": {
+"median": 48568.5,
+"p95": 50130,
+"max": 54228,
+"n": 500
+},
+"reader_calls": {
+"median": 4.0,
+"p95": 5,
+"max": 10,
+"n": 500
+},
+"reader_prompt_tokens": {
+"median": 51109.5,
+"p95": 101530,
+"max": 268265,
+"n": 500
+},
+"reader_completion_tokens": {
+"median": 268.0,
+"p95": 931,
+"max": 1495,
+"n": 500
+},
+"reader_total_tokens": {
+"median": 52691.5,
+"p95": 105446,
+"max": 283091,
+"n": 500
+},
+"retrieve_ms": {
+"median": 7568.305899971165,
+"p95": 15107.016500027385,
+"max": 24107.921199989505,
+"n": 500
+},
+"generate_ms": {
+"median": 20853.131250012666,
+"p95": 40275.09279997321,
+"max": 134142.36429997254,
+"n": 500
+},
+"tokens_per_char_median": 0.30847229411521865,
+"reader_tokens_exact": true
+},
 "questions": {
 "e47becba": {
 "model": "gemini-3.8-flash",

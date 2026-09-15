@@ -85,6 +85,11 @@ JUDGE_MODEL_HELP = "Primary judge model name"
 SECONDARY_JUDGE_HELP = "Secondary judge provider (reported beside the primary, never instead). Default gemini-3.5-flash-lite"
 SECONDARY_JUDGE_MODEL_HELP = "Secondary judge model name"
 NO_SECONDARY_HELP = "Run the primary judge only"
+CONTEXT_FORMAT_HELP = (
+    "Layout of the retrieved context handed to the reader: full (one block per stored chunk with its "
+    "header and date/type trailer, the published layout) | compact (same stored text grouped by session, "
+    "one header per session, no per-chunk bookkeeping, '(in reply to)' repeats dropped)"
+)
 
 
 @app.command()
@@ -128,6 +133,7 @@ def run(
     agent_prefix: Optional[str] = typer.Option(None, "--agent-prefix", help="Caura agent-id prefix; use a fresh prefix to ingest into a separate store without touching an existing one"),
     bulk_size: Optional[int] = typer.Option(None, "--bulk-size", help="Items per /memories/bulk call (max 100); raise for fine-grained chunking"),
     pipeline: str = typer.Option("direct", "--pipeline", help="Pipeline architecture: direct | agentic-v1"),
+    context_format: str = typer.Option("full", "--context-format", help=CONTEXT_FORMAT_HELP),
     exclude_results: Optional[list[Path]] = typer.Option(None, "--exclude-results", help="Exclude question IDs from previous results.json / eval_results.json / hypotheses.jsonl"),
     seed: Optional[int] = typer.Option(None, "--seed", help="Random seed for sampling questions"),
     concurrency: int = typer.Option(5, "--concurrency", "-c", help="Concurrent workers for retrieval, generation, and judging"),
@@ -172,6 +178,7 @@ def run(
         judge_llm=judge,
         output_dir=output_dir,
         secondary_judge_llm=secondary_judge,
+        context_format=context_format,
     )
 
     try:
@@ -291,12 +298,17 @@ def rerun_pipeline(
     data_path: Optional[Path] = typer.Option(None, "--data-path", help="Local path to longmemeval_s_cleaned.json"),
     skip_generation: bool = typer.Option(False, "--skip-generation", help="Skip generation if hypotheses.jsonl already exists"),
     generate_html: bool = typer.Option(True, "--html/--no-html", help="Generate HTML benchmark report"),
+    context_format: str = typer.Option("full", "--context-format", help=CONTEXT_FORMAT_HELP + " Saved contexts are re-laid-out offline; the reformatted context is what gets saved."),
 ):
     """Re-run answer generation and evaluation on already-retrieved context from an earlier run."""
     import json
     import concurrent.futures
     from datetime import datetime, timezone
+    from .context_format import CONTEXT_FORMATS, reformat_context
     from .report import generate_report_for_run
+
+    if context_format not in CONTEXT_FORMATS:
+        raise typer.BadParameter(f"--context-format must be one of {CONTEXT_FORMATS}")
 
     out_run_dir = output_dir / run_name
     out_run_dir.mkdir(parents=True, exist_ok=True)
@@ -334,11 +346,12 @@ def rerun_pipeline(
             idx, src = idx_src
             item = items_by_id.get(src.question_id)
             q_date = item.question_date if item else None
+            context = reformat_context(src.context or "", context_format)
 
             hypothesis_ans, gen_ms, pipeline_trace, reader_usage = run_reader_pipeline(
                 reader_llm=reader,
                 question=src.question,
-                context=src.context,
+                context=context,
                 question_date=q_date,
                 pipeline=pipeline,
             )
@@ -349,7 +362,7 @@ def rerun_pipeline(
                 question=src.question,
                 answer=src.answer,
                 question_type=src.question_type,
-                context=src.context,
+                context=context,
                 retrieve_time_ms=src.retrieve_time_ms,
                 generate_time_ms=gen_ms,
                 pipeline=pipeline,
@@ -433,6 +446,7 @@ def rerun_pipeline(
         "parameters": {
             "source_hypotheses": str(source_hypotheses),
             "pipeline": pipeline,
+            "context_format": context_format,
             "generation": {
                 "pipeline": pipeline,
                 "reader": reader_name,

@@ -13,6 +13,7 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
+from .context_format import CONTEXT_FORMATS, format_context, format_facts  # noqa: F401  (format_facts re-exported)
 from .dataset import LongMemEvalDataset
 from .llm import BaseLLM, get_llm
 from .models import EvaluationResult, HypothesisEntry, LongMemEvalItem
@@ -20,31 +21,6 @@ from .prompts import build_answer_prompt, get_official_judge_prompt
 from .providers.base import BaseMemoryProvider
 
 console = Console()
-
-
-def format_facts(facts) -> str:
-    """Format retrieved memory facts into context text for answer prompt, sorted chronologically."""
-    if not facts:
-        return ""
-    # Sort facts chronologically (oldest to newest) by timestamp if available
-    sorted_facts = sorted(
-        facts,
-        key=lambda f: (0, f.timestamp) if f.timestamp else (1, ""),
-    )
-    lines = []
-    for f in sorted_facts:
-        chunk = []
-        if f.title:
-            chunk.append(f.title)
-        chunk.append(f.content)
-        if f.timestamp:
-            chunk.append(f"date: {f.timestamp}")
-        if f.memory_type:
-            chunk.append(f"type: {f.memory_type}")
-        if f.tags:
-            chunk.append(f"tags: {', '.join(f.tags)}")
-        lines.append("\n".join(chunk))
-    return "\n---\n".join(lines)
 
 
 DEFAULT_PRIMARY_JUDGE = ("openai", "gpt-4o")
@@ -274,7 +250,11 @@ class BenchmarkRunner:
         judge_llm: BaseLLM,
         output_dir: Path = Path("outputs"),
         secondary_judge_llm: BaseLLM | None = None,
+        context_format: str = "full",
     ):
+        if context_format not in CONTEXT_FORMATS:
+            raise ValueError(f"context_format must be one of {CONTEXT_FORMATS}, got {context_format!r}")
+        self.context_format = context_format
         self.dataset = dataset
         self.provider = provider
         self.reader_llm = reader_llm
@@ -372,7 +352,7 @@ class BenchmarkRunner:
             retrieval_stats = pop_stats() if callable(pop_stats) else None
 
             # 3. Generate answer
-            context_text = format_facts(facts)
+            context_text = format_context(facts, self.context_format)
             hypothesis_ans, gen_ms, pipeline_trace, reader_usage = run_reader_pipeline(
                 reader_llm=self.reader_llm,
                 question=item.question,
@@ -486,6 +466,7 @@ class BenchmarkRunner:
                     "as_of_recall": getattr(self.provider, "send_valid_at", False),
                     "valid_at": getattr(self.provider, "send_valid_at", False),
                     "context_ordering": "Chronological (oldest to newest)",
+                    "context_format": self.context_format,
                 },
                 "generation": {
                     "pipeline": pipeline,
