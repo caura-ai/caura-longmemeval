@@ -26,6 +26,7 @@ class OracleMemoryProvider(BaseMemoryProvider):
     ignored; this is the reader's ceiling given perfect retrieval."""
 
     name = "oracle"
+    search_strategy = "Oracle: gold sessions only, no search"
 
     def __init__(self):
         self._store: dict[str, list[MemoryDocument]] = {}
@@ -54,6 +55,7 @@ class FullContextMemoryProvider(BaseMemoryProvider):
     haystack (every session, chronological). ``top_k`` is ignored."""
 
     name = "fullcontext"
+    search_strategy = "None: whole haystack in context"
 
     def __init__(self):
         self._store: dict[str, list[MemoryDocument]] = {}
@@ -80,6 +82,7 @@ class KeywordBM25MemoryProvider(BaseMemoryProvider):
     """Simple term-frequency retriever for baseline comparison without external services."""
 
     name = "bm25"
+    search_strategy = "BM25 keyword search"
 
     def __init__(self):
         self._store: dict[str, list[MemoryDocument]] = {}

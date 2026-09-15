@@ -455,6 +455,10 @@ def rerun_pipeline(
             },
         },
     }
+    # Store, retrieval and server are the source run's; only the reader side is new.
+    from .report import inherit_source_run_meta
+
+    inherit_source_run_meta(run_meta)
     payload: dict = {"run": run_meta, "summary": eval_summary}
     if secondary_block is not None:
         payload["secondary_evaluation"] = secondary_block

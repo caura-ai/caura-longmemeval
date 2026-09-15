@@ -306,6 +306,15 @@ class CauraMemoryProvider(BaseMemoryProvider):
             self.category_adaptive = category_adaptive
         else:
             self.category_adaptive = knob("CATEGORY_ADAPTIVE").lower() in ("true", "1", "yes")
+        # Recorded in results.json -> run.parameters.retrieval: with expansion on, /search is asked
+        # for this many candidates and the seed walk stops when the character budget is spent.
+        self.search_candidates = SIBLING_CANDIDATE_TOP_K if self.sibling_expansion else None
+        # Human-readable description recorded in results.json -> run.parameters.retrieval.strategy.
+        self.search_strategy = (
+            "Adaptive per-category profile, hybrid (dense + full-text)"
+            if self.category_adaptive
+            else "Hybrid (dense + full-text), server default profile"
+        )
 
         self.commit_batch = max(1, int(_env("COMMIT_BATCH", str(commit_batch))))
         self.ingest_workers = max(1, int(_env("INGEST_WORKERS", str(ingest_workers))))

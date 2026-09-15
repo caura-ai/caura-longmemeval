@@ -457,6 +457,8 @@ class BenchmarkRunner:
                 },
                 "retrieval": {
                     "top_k": top_k,
+                    "strategy": getattr(self.provider, "search_strategy", None),
+                    "search_candidates": getattr(self.provider, "search_candidates", None),
                     "category_adaptive": getattr(self.provider, "category_adaptive", None),
                     "sibling_expansion": getattr(self.provider, "sibling_expansion", None),
                     "context_budget_chars": getattr(self.provider, "context_budget_chars", None),

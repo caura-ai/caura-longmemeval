@@ -36,7 +36,9 @@
         "sibling_window": 0,
         "as_of_recall": false,
         "valid_at": false,
-        "context_ordering": "Chronological (oldest to newest)"
+        "context_ordering": "Chronological (oldest to newest)",
+        "strategy": "Hybrid (dense + full-text), server default profile",
+        "search_candidates": 150
       },
       "generation": {
         "pipeline": "agentic-v1",
@@ -92,7 +94,7 @@
     "retrieval": {
       "avg": 9415.513593600483,
       "p50": 7773.258799978066,
-      "p95": 17654.9054000061,
+      "p95": 17891.700399981346,
       "min": 4143.3095000102185,
       "max": 57368.851999985054,
       "avg_context_chars": 157210.524,
@@ -101,7 +103,7 @@
     "generation": {
       "avg": 9256.425372999276,
       "p50": 7562.761799956206,
-      "p95": 16131.002800015267,
+      "p95": 16152.548599988222,
       "min": 3850.2700999961235,
       "max": 84164.72519998206
     }

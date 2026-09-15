@@ -29,7 +29,8 @@
       "retrieval": {
         "top_k": 20,
         "category_adaptive": true,
-        "context_ordering": "Chronological (oldest to newest)"
+        "context_ordering": "Chronological (oldest to newest)",
+        "strategy": "Adaptive per-category profile, hybrid (dense + full-text)"
       },
       "generation": {
         "pipeline": "agentic-v1",
@@ -85,7 +86,7 @@
     "retrieval": {
       "avg": 4884.930818800173,
       "p50": 4202.873400005046,
-      "p95": 11958.657300012419,
+      "p95": 12304.272000008496,
       "min": 968.6617999977898,
       "max": 19641.401600005338,
       "avg_context_chars": 147143.154,
@@ -94,7 +95,7 @@
     "generation": {
       "avg": 12636.934175600356,
       "p50": 11177.61280000559,
-      "p95": 23804.810999979964,
+      "p95": 24181.687099975534,
       "min": 4265.892700001132,
       "max": 38987.37940000137
     }

@@ -34,12 +34,24 @@ CATEGORY_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+def context_separator(context_text: str) -> str:
+    """Block separator of a saved context: ``===`` between sessions in the ``compact`` layout,
+    ``---`` between chunks in the ``full`` layout (and every layout that predates ``compact``)."""
+    if "\n---\n" in context_text:
+        return "\n---\n"
+    if "\n\n===\n\n" in context_text:
+        return "\n\n===\n\n"
+    return "\n---\n"
+
+
 def parse_context_chunks(context_text: str, max_chunks: int = 8, preview_chars: int = 700) -> list[dict[str, Any]]:
     """Parse retrieved context text into structured preview chunks."""
     if not context_text:
         return []
 
-    raw_chunks = [c.strip() for c in context_text.split("\n---\n") if c.strip()]
+    # `full` layout separates chunks with "---"; `compact` separates sessions with "===".
+    separator = context_separator(context_text)
+    raw_chunks = [c.strip() for c in context_text.split(separator) if c.strip()]
     parsed = []
 
     for rank, chunk in enumerate(raw_chunks[:max_chunks], 1):
@@ -47,7 +59,7 @@ def parse_context_chunks(context_text: str, max_chunks: int = 8, preview_chars: 
         header = ""
         body_lines = []
 
-        if lines and (lines[0].startswith("[") or "date:" in lines[0].lower()):
+        if lines and (lines[0].startswith("[") or lines[0].startswith("Session ") or "date:" in lines[0].lower()):
             header = lines[0]
             body_lines = lines[1:]
         else:
@@ -83,7 +95,9 @@ def compute_quantiles(values: list[float]) -> dict[str, float]:
     avg = sum(s) / n
 
     def percentile(p: float) -> float:
-        idx = int(round(p * (n - 1)))
+        # Same definition as scripts/context_tokens.py (sorted(values)[int(p * n)]) so the
+        # HTML report, context_tokens.json and the published tables agree to the digit.
+        idx = int(p * n)
         return s[max(0, min(n - 1, idx))]
 
     return {
@@ -121,12 +135,80 @@ def summarize_secondary(
     }
 
 
+DEFAULT_STRATEGY_BY_PROVIDER = {
+    "caura": "Hybrid (dense + full-text), server default profile",
+    "bm25": "BM25 keyword search",
+    "oracle": "Oracle: gold sessions only, no search",
+    "fullcontext": "None: whole haystack in context",
+}
+
+
+def inherit_source_run_meta(run_meta: dict[str, Any]) -> None:
+    """For a rerun-pipeline run, copy store / retrieval / server metadata from the source run.
+
+    ``rerun-pipeline`` only re-reads saved contexts, so provider, server version, top_k,
+    selection, ingestion and retrieval parameters are those of the run whose
+    ``hypotheses.jsonl`` it consumed. Fields already present are left alone, except
+    ``retrieval.context_format`` which reflects the layout actually handed to the reader.
+    """
+    params = run_meta.setdefault("parameters", {})
+    src_hypo = params.get("source_hypotheses")
+    if not src_hypo:
+        return
+    src_results_path = Path(src_hypo).parent / "results.json"
+    if not src_results_path.exists():
+        return
+    try:
+        src_run = json.loads(src_results_path.read_text(encoding="utf-8")).get("run", {})
+    except Exception:
+        return
+    src_params = src_run.get("parameters", {})
+    for key in ("selection", "ingestion", "retrieval"):
+        if key in src_params and key not in params:
+            params[key] = dict(src_params[key])
+    if "retrieval" in params and params.get("context_format"):
+        params["retrieval"]["context_format"] = params["context_format"]
+    for key in ("provider", "server", "skip_ingest"):
+        if key in src_run and run_meta.get(key) is None:
+            run_meta[key] = src_run[key]
+    src_top_k = src_run.get("top_k") or (src_params.get("retrieval") or {}).get("top_k")
+    if src_top_k:
+        run_meta["top_k"] = src_top_k
+    run_meta.setdefault("source_run", src_run.get("name"))
+
+
+def fill_default_strategy(run_meta: dict[str, Any]) -> None:
+    """Older results.json files predate the ``retrieval.strategy`` field; derive it from the provider."""
+    retrieval = run_meta.get("parameters", {}).get("retrieval")
+    if not isinstance(retrieval, dict):
+        return
+    provider = str(run_meta.get("provider", "")).lower()
+    if provider == "caura" and retrieval.get("sibling_expansion") and retrieval.get("search_candidates") is None:
+        from .providers.caura import SIBLING_CANDIDATE_TOP_K
+
+        retrieval["search_candidates"] = SIBLING_CANDIDATE_TOP_K
+    if retrieval.get("strategy"):
+        return
+    if retrieval.get("category_adaptive"):
+        retrieval["strategy"] = "Adaptive per-category profile, hybrid (dense + full-text)"
+        return
+    default = DEFAULT_STRATEGY_BY_PROVIDER.get(provider)
+    if default:
+        retrieval["strategy"] = default
+
+
 def build_report_payload(
     run_meta: dict[str, Any],
     summary: dict[str, Any],
     hypotheses: list[HypothesisEntry] | dict[str, HypothesisEntry] | list[dict[str, Any]],
+    token_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Construct a consolidated benchmark result dictionary matching Caura standards."""
+    """Construct a consolidated benchmark result dictionary matching Caura standards.
+
+    ``token_stats`` is the ``summary`` block of a ``context_tokens.json`` produced by
+    ``scripts/context_tokens.py`` (exact Gemini-tokenized context and per-call reader usage).
+    When present the report shows those figures instead of the chars/4 estimate.
+    """
     # Index hypotheses by question_id
     hypos_by_id: dict[str, dict[str, Any]] = {}
     if isinstance(hypotheses, dict):
@@ -169,7 +251,7 @@ def build_report_payload(
         ctx_len = len(raw_context)
         context_lengths.append(ctx_len)
 
-        all_chunks = [c for c in raw_context.split("\n---\n") if c.strip()]
+        all_chunks = [c for c in raw_context.split(context_separator(raw_context)) if c.strip()]
         total_chunks_count = len(all_chunks)
         chunk_counts.append(total_chunks_count)
 
@@ -210,6 +292,15 @@ def build_report_payload(
     retrieval_stats = compute_quantiles(ret_latencies)
     retrieval_stats["avg_context_chars"] = (sum(context_lengths) / len(context_lengths)) if context_lengths else 0
     retrieval_stats["avg_chunks"] = (sum(chunk_counts) / len(chunk_counts)) if chunk_counts else 0
+    if token_stats:
+        ctx = token_stats.get("context_tokens") or {}
+        tot = token_stats.get("reader_total_tokens") or {}
+        if ctx.get("median") is not None:
+            retrieval_stats["context_tokens_median"] = ctx["median"]
+            retrieval_stats["context_tokens_p95"] = ctx.get("p95")
+        if tot.get("median") is not None:
+            retrieval_stats["reader_total_tokens_median"] = tot["median"]
+            retrieval_stats["reader_total_tokens_p95"] = tot.get("p95")
 
     generation_stats = compute_quantiles(gen_latencies)
 
@@ -332,24 +423,9 @@ def generate_report_for_run(
         except Exception:
             pass
 
-    # If source_hypotheses is present, inherit retrieval and ingestion parameters from source run
-    src_hypo = run_meta.get("parameters", {}).get("source_hypotheses")
-    if src_hypo:
-        try:
-            src_results_path = Path(src_hypo).parent / "results.json"
-            if src_results_path.exists():
-                src_data = json.loads(src_results_path.read_text(encoding="utf-8"))
-                src_run = src_data.get("run", {})
-                src_params = src_run.get("parameters", {})
-                run_params = run_meta.setdefault("parameters", {})
-                if "retrieval" in src_params and "retrieval" not in run_params:
-                    run_params["retrieval"] = src_params["retrieval"]
-                if "ingestion" in src_params and "ingestion" not in run_params:
-                    run_params["ingestion"] = src_params["ingestion"]
-                if "provider" in src_run and "provider" not in run_meta:
-                    run_meta["provider"] = src_run["provider"]
-        except Exception:
-            pass
+    # A rerun-pipeline run reads saved contexts: its store, retrieval and server are the source run's.
+    inherit_source_run_meta(run_meta)
+    fill_default_strategy(run_meta)
 
     if "pipeline" not in run_meta:
         first_hypo = next(iter(hypos.values())) if isinstance(hypos, dict) else (hypos[0] if hypos else None)
@@ -359,7 +435,15 @@ def generate_report_for_run(
                 run_meta["pipeline"] = pipe
                 run_meta.setdefault("parameters", {}).setdefault("generation", {})["pipeline"] = pipe
 
-    payload = build_report_payload(run_meta, eval_data, hypos)
+    token_stats: dict[str, Any] | None = None
+    token_path = run_dir / "context_tokens.json"
+    if token_path.exists():
+        try:
+            token_stats = json.loads(token_path.read_text(encoding="utf-8")).get("summary")
+        except Exception:
+            token_stats = None
+
+    payload = build_report_payload(run_meta, eval_data, hypos, token_stats=token_stats)
 
     # Secondary judge: recompute from its verdict file when present (fresh agreement numbers),
     # otherwise keep whatever results.json already carried.
@@ -1424,7 +1508,11 @@ const isAdaptive = (
 );
 
 const baseK = run.top_k || retParams.top_k || 20;
-const topKDisplay = isAdaptive ? `Adaptive (15–60, base ${baseK})` : fmtNum(baseK);
+const topKDisplay = isAdaptive
+  ? `Adaptive (15–60, base ${baseK})`
+  : retParams.search_candidates
+    ? `${fmtNum(baseK)} (${fmtNum(retParams.search_candidates)} candidates walked under the budget)`
+    : fmtNum(baseK);
 
 // Populate chips
 document.querySelector('#run-chips').innerHTML = `
@@ -1452,9 +1540,12 @@ const paramGroups = [
     title: 'Memory Store',
     items: [
       ['Provider', h(run.provider || ingest.provider || 'caura')],
+      ...(run.server && run.server.version ? [['Server', `${h(run.server.version)}${run.server.plugin_version ? ` · plugin ${h(run.server.plugin_version)}` : ''}`]] : []),
       ['Isolation', ingest.isolation || 'One fleet sandbox per question'],
       ['Ingestion Mode', run.skip_ingest ? 'Pre-indexed / Skipped' : (ingest.mode || 'Bulk session ingest')],
-      ['Chunking', ingest.chunk_chars ? `${fmtNum(ingest.chunk_chars)} chars` : '4,000 chars']
+      ['Chunking', ingest.chunk_mode === 'turns'
+        ? `One memory per user turn + reply (≤ ${fmtNum(ingest.chunk_chars || 1200)} chars)`
+        : ingest.chunk_chars ? `${fmtNum(ingest.chunk_chars)}-char session parts` : '4,000-char session parts']
     ]
   },
   {
@@ -1463,8 +1554,15 @@ const paramGroups = [
       ['Top-k Setting', topKDisplay],
       ['As-Of Recall', (retParams.as_of_recall !== false && retParams.valid_at !== false) ? 'Enabled (anchored at question_date)' : 'Disabled (wall-clock)'],
       ['Search Strategy', retParams.strategy || (isAdaptive ? 'Adaptive profile / semantic search' : 'Semantic search')],
+      ...(retParams.sibling_expansion != null ? [['Session Expansion', retParams.sibling_expansion ? `Whole session of each hit${retParams.context_budget_chars ? `, ${fmtNum(retParams.context_budget_chars)}-char budget` : ''}` : 'Off']] : []),
+      ...(retParams.raw_turns_only != null ? [['Server-Derived Memories', retParams.raw_turns_only ? 'Dropped (stored turns only)' : 'Allowed in context']] : []),
       ['Context Ordering', retParams.context_ordering || 'Chronological (oldest to newest)'],
-      ['Avg Context Tokens', summary.retrieval ? `~${fmtNum(Math.round(summary.retrieval.avg_context_chars / 4))} est. tokens` : '—']
+      ...(retParams.context_format ? [['Context Layout', retParams.context_format === 'compact' ? 'compact (one header per session)' : 'full (as stored, one header per chunk)']] : []),
+      ['Context Tokens / Question', summary.retrieval && summary.retrieval.context_tokens_median != null
+        ? `${fmtNum(Math.round(summary.retrieval.context_tokens_median))} median · ${fmtNum(summary.retrieval.context_tokens_p95)} p95 (Gemini tokenizer)`
+        : summary.retrieval ? `~${fmtNum(Math.round(summary.retrieval.avg_context_chars / 4))} avg, est. chars/4` : '—'],
+      ...(summary.retrieval && summary.retrieval.reader_total_tokens_median != null
+        ? [['Reader Tokens / Question (all calls)', `${fmtNum(Math.round(summary.retrieval.reader_total_tokens_median))} median · ${fmtNum(summary.retrieval.reader_total_tokens_p95)} p95`]] : [])
     ]
   },
   {

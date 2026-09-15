@@ -11,9 +11,6 @@
     "skip_ingest": true,
     "reader": "gemini-3.8-flash",
     "judge": "gpt-4o",
-    "judge_secondary": "gemini-3.5-flash-lite",
-    "judge_protocol": "gpt-4o primary (LongMemEval reference judge, headline number); gemini-3.5-flash-lite secondary (strict development judge); both always reported",
-    "pipeline": "agentic-v1",
     "parameters": {
       "selection": {
         "category": null,
@@ -39,7 +36,9 @@
         "sibling_window": 0,
         "as_of_recall": false,
         "valid_at": false,
-        "context_ordering": "Chronological (oldest to newest)"
+        "context_ordering": "Chronological (oldest to newest)",
+        "strategy": "Hybrid (dense + full-text), server default profile",
+        "search_candidates": 150
       },
       "generation": {
         "pipeline": "agentic-v1",
@@ -48,7 +47,10 @@
         "judge_secondary": "gemini-3.5-flash-lite",
         "prompt": "agentic-v1 (extract -> answer -> infer -> verify)"
       }
-    }
+    },
+    "judge_secondary": "gemini-3.5-flash-lite",
+    "judge_protocol": "gpt-4o primary (LongMemEval reference judge, headline number); gemini-3.5-flash-lite secondary (strict development judge); both always reported",
+    "pipeline": "agentic-v1"
   },
   "summary": {
     "overall_accuracy": 0.91,
@@ -92,7 +94,7 @@
     "retrieval": {
       "avg": 20947.16526220064,
       "p50": 13775.556800013874,
-      "p95": 53754.97859995812,
+      "p95": 54063.391599978786,
       "min": 4858.536000014283,
       "max": 132507.14300002437,
       "avg_context_chars": 163352.672,
@@ -101,7 +103,7 @@
     "generation": {
       "avg": 15171.605867600183,
       "p50": 13113.338399969507,
-      "p95": 28725.057300005574,
+      "p95": 29938.617500010878,
       "min": 4857.658599969,
       "max": 84008.17689998075
     }
@@ -25345,9 +25347,9 @@
         },
         {
           "rank": 5,
-          "header": "",
+          "header": "Session continuation event",
           "date": "2023-02-27T04:25:00+00:00",
-          "preview": "Session continuation event\n[date: 2023-02-27T04:25:00+00:00 | context: Session gpt4_fa19884d_sharegpt_8ziBSjY_11 - happened on 2023-02-27 04:25:00 UTC. | turn 4/24]\nUser: continue\ndate: 2023-02-27T04:25:00Z\ntype: episode",
+          "preview": "[date: 2023-02-27T04:25:00+00:00 | context: Session gpt4_fa19884d_sharegpt_8ziBSjY_11 - happened on 2023-02-27 04:25:00 UTC. | turn 4/24]\nUser: continue\ndate: 2023-02-27T04:25:00Z\ntype: episode",
           "chars": 220
         },
         {
@@ -39503,9 +39505,9 @@
         },
         {
           "rank": 6,
-          "header": "",
+          "header": "Session continuation",
           "date": "2023-05-22T18:23:00+00:00",
-          "preview": "Session continuation\n[date: 2023-05-22T18:23:00+00:00 | context: Session 8752c811_answer_sharegpt_6pWK9yx_0 - happened on 2023-05-22 18:23:00 UTC. | turn 6/10]\nUser: Continue\ndate: 2023-05-22T18:23:00Z\ntype: episode",
+          "preview": "[date: 2023-05-22T18:23:00+00:00 | context: Session 8752c811_answer_sharegpt_6pWK9yx_0 - happened on 2023-05-22 18:23:00 UTC. | turn 6/10]\nUser: Continue\ndate: 2023-05-22T18:23:00Z\ntype: episode",
           "chars": 215
         }
       ],

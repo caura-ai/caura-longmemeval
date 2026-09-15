@@ -4,27 +4,6 @@
   "run": {
     "name": "caura-500-opaque",
     "provider": "caura",
-    "server": {
-      "base_url": "https://caura.ai/api/v1",
-      "version": "3.10.1",
-      "plugin_version": "2.22.1",
-      "server_llm": {
-        "provider": "vertex",
-        "model": "gemini-3.1-flash-lite",
-        "configured": true
-      },
-      "embedding": {
-        "provider": "openai",
-        "model": "BAAI/bge-m3",
-        "configured": true
-      },
-      "search_default_profile": {
-        "fts_weight": 0.6,
-        "score_formula": 0,
-        "candidate_pool_size": 0,
-        "freshness_reference": 1
-      }
-    },
     "started_at": "2026-09-14T14:29:48.592063+00:00",
     "finished_at": "2026-09-14T15:25:26.138430+00:00",
     "duration_seconds": 3337.546367,
@@ -32,9 +11,6 @@
     "skip_ingest": true,
     "reader": "gemini-3.8-flash",
     "judge": "gpt-4o",
-    "judge_secondary": "gemini-3.5-flash-lite",
-    "judge_protocol": "gpt-4o primary (LongMemEval reference judge, headline number); gemini-3.5-flash-lite secondary (strict development judge); both always reported",
-    "pipeline": "agentic-v1",
     "parameters": {
       "selection": {
         "category": null,
@@ -62,7 +38,9 @@
         "multiquery": 1,
         "as_of_recall": false,
         "valid_at": false,
-        "context_ordering": "Chronological (oldest to newest)"
+        "context_ordering": "Chronological (oldest to newest)",
+        "strategy": "Hybrid (dense + full-text), server default profile",
+        "search_candidates": 150
       },
       "generation": {
         "pipeline": "agentic-v1",
@@ -71,7 +49,31 @@
         "judge_secondary": "gemini-3.5-flash-lite",
         "prompt": "agentic-v1 (extract -> answer -> infer -> verify)"
       }
-    }
+    },
+    "server": {
+      "base_url": "https://caura.ai/api/v1",
+      "version": "3.10.1",
+      "plugin_version": "2.22.1",
+      "server_llm": {
+        "provider": "vertex",
+        "model": "gemini-3.1-flash-lite",
+        "configured": true
+      },
+      "embedding": {
+        "provider": "openai",
+        "model": "BAAI/bge-m3",
+        "configured": true
+      },
+      "search_default_profile": {
+        "fts_weight": 0.6,
+        "score_formula": 0,
+        "candidate_pool_size": 0,
+        "freshness_reference": 1
+      }
+    },
+    "judge_secondary": "gemini-3.5-flash-lite",
+    "judge_protocol": "gpt-4o primary (LongMemEval reference judge, headline number); gemini-3.5-flash-lite secondary (strict development judge); both always reported",
+    "pipeline": "agentic-v1"
   },
   "summary": {
     "overall_accuracy": 0.916,
@@ -115,16 +117,20 @@
     "retrieval": {
       "avg": 8830.682025000453,
       "p50": 7574.460299976636,
-      "p95": 15010.42950002011,
+      "p95": 15107.016500027385,
       "min": 4388.7608999502845,
       "max": 24107.921199989505,
       "avg_context_chars": 155968.22,
-      "avg_chunks": 176.76
+      "avg_chunks": 176.76,
+      "context_tokens_median": 48568.5,
+      "context_tokens_p95": 50130,
+      "reader_total_tokens_median": 52691.5,
+      "reader_total_tokens_p95": 105446
     },
     "generation": {
       "avg": 22741.242330800276,
       "p50": 20858.060400001705,
-      "p95": 40137.34730001306,
+      "p95": 40275.09279997321,
       "min": 4890.361599973403,
       "max": 134142.36429997254
     }

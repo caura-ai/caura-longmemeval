@@ -37,25 +37,34 @@ Every retrieval knob is passed explicitly on the command line below, so the
 legacy `CAURA_*` values in `.env` (4k-part store) do not matter for turn mode;
 the effective values are also written to `results.json -> run.parameters`.
 
-## Headline run (`outputs/caura-500-opaque`)
+## Headline run (`outputs/caura-500-opaque-compact`, 461/500 GPT-4o, 451/500 Flash-Lite)
 
 Ingest at turn granularity into a fresh store (agent prefix `lmeo`), with
 opaque session labels (no dataset session id or question id reaches the stored
-text), then run retrieval + generation + both judges:
+text), then run retrieval + generation + both judges with the compact context
+layout:
 
 ```bash
 uv run longmemeval ingest --name caura-500-opaque-ingest \
     --chunk-mode turns --agent-prefix lmeo --bulk-size 100 --concurrency 5
 
-uv run longmemeval run --name caura-500-opaque --provider caura --skip-ingest \
+uv run longmemeval run --name my-run --provider caura --skip-ingest \
     --chunk-mode turns --agent-prefix lmeo \
     --sibling-expansion --sibling-window 0 --context-budget 150000 \
-    --raw-turns-only --no-as-of-recall \
+    --raw-turns-only --no-as-of-recall --context-format compact \
     --pipeline agentic-v1 --reader gemini --reader-model gemini-3.8-flash \
     --judge openai --judge-model gpt-4o \
     --secondary-judge gemini --secondary-judge-model gemini-3.5-flash-lite \
     --concurrency 5
 ```
+
+The committed headline artifacts were produced in two steps that are equivalent
+to the single command above, because retrieval is deterministic: the retrieval
+pass `outputs/caura-500-opaque` (the same command with `--context-format full`,
+458/500) and a `rerun-pipeline --context-format compact` of its saved contexts
+(see "Context layout" below). Both passes and a second full-layout pass
+(`caura-500-opaque-run2`, 460/500) are committed; they share the same 863/886
+gold-turn coverage.
 
 Effective retrieval configuration (turn-mode defaults, all recorded in `results.json`):
 
@@ -72,7 +81,7 @@ Effective retrieval configuration (turn-mode defaults, all recorded in `results.
 
 ## Context layout (`--context-format`)
 
-`full` (the headline run) hands the reader every retrieved chunk as stored: its own
+`full` hands the reader every retrieved chunk as stored: its own
 `[date | context: Session <label> - happened on <date> UTC. | turn i/n]` header line, the
 text, then a `date:` / `type:` trailer and a `---` separator. On the turn store that
 bookkeeping, plus the `(in reply to) <user turn>` prefix that split replies carry for the
@@ -94,9 +103,11 @@ uv run longmemeval rerun-pipeline outputs/caura-500-opaque/hypotheses.jsonl \
     --secondary-judge gemini --secondary-judge-model gemini-3.5-flash-lite --concurrency 5
 ```
 
-Percentiles in `scripts/context_tokens.py` and its `context_tokens.json -> summary` block
-are `sorted(values)[int(0.95 * n)]`, so a one-line recomputation from the cached file
-matches the printed table.
+Percentiles in `scripts/context_tokens.py`, its `context_tokens.json -> summary` block and
+the latency cards in `report.html` are all `sorted(values)[int(0.95 * n)]`, so a one-line
+recomputation from the cached file matches the printed table. When `context_tokens.json` is
+present in a run directory, `longmemeval report` shows its exact Gemini-tokenized figures
+instead of the chars/4 estimate.
 
 ## Judging an existing run with another judge
 
@@ -110,10 +121,10 @@ uv run longmemeval evaluate-hypotheses outputs/caura-500-opaque/hypotheses.jsonl
 
 ```bash
 # gold-turn coverage and retrieval-/reader-bound buckets under each judge file present
-uv run python scripts/coverage.py outputs/caura-500-opaque --list-failures --json outputs/caura-500-opaque/coverage.json
+uv run python scripts/coverage.py outputs/caura-500-opaque-compact --list-failures --json outputs/caura-500-opaque-compact/coverage.json
 
 # context tokens (Gemini tokenizer), total reader tokens per question, latency
-uv run python scripts/context_tokens.py outputs/caura-500-opaque
+uv run python scripts/context_tokens.py outputs/caura-500-opaque-compact
 ```
 
 ## Runs in this repository
@@ -124,10 +135,10 @@ uv run python scripts/context_tokens.py outputs/caura-500-opaque
 | `caura-500-turns` | 12 Sep 2026 | turn granularity (`lmet`), headers carry dataset session ids, derived memories allowed | first turn-granularity run; the 91.4% draft number | 91.4 | 89.0 |
 | `caura-500-turns-0914` | 14 Sep 2026 | same `lmet` store, fresh retrieval + generation | variance run of the above (same configuration) | 91.0 | 89.4 |
 | `caura-500-turns-prompts-v2` | 14 Sep 2026 | saved `caura-500-turns` contexts | reader prompts with dataset-lifted examples removed, re-run on frozen contexts (`rerun-pipeline`) | 90.8 | 89.8 |
-| `caura-500-opaque` | 14 Sep 2026 | turn granularity (`lmeo`), opaque labels, derived memories dropped, new prompts | **headline**: all three review fixes applied | **91.6** | 89.8 |
-| `caura-500-opaque-run2` | 14 Sep 2026 | same `lmeo` store, fresh retrieval + generation | variance run of the headline (identical configuration; same gold-turn coverage, 863/886) | 92.0 | 89.2 |
+| `caura-500-opaque` | 14 Sep 2026 | turn granularity (`lmeo`), opaque labels, derived memories dropped, new prompts | full context layout; the retrieval pass whose saved contexts the headline re-reads | 91.6 | 89.8 |
+| `caura-500-opaque-run2` | 14 Sep 2026 | same `lmeo` store, fresh retrieval + generation | variance run, full layout (identical configuration; same gold-turn coverage, 863/886) | 92.0 | 89.2 |
 | `oracle-500-agentic-v1` | 14 Sep 2026 | no store: reader gets exactly the answer sessions | reader ceiling under perfect retrieval (`--provider oracle`) | 94.6 | 92.8 |
-| `caura-500-opaque-compact` | 15 Sep 2026 | saved `caura-500-opaque` contexts, re-laid-out with `--context-format compact` | same retrieved text, half the reader tokens (26.5k vs 52.7k median total; 22.4k vs 48.6k context) | 92.2 | 90.2 |
+| `caura-500-opaque-compact` | 15 Sep 2026 | saved `caura-500-opaque` contexts, re-laid-out with `--context-format compact` | **headline**: same retrieved text, half the reader tokens (26.5k vs 52.7k median total; 22.4k vs 48.6k context) | **92.2** | 90.2 |
 
 Scores are accuracy over all 500 questions from each run's `eval_results.json`
 (GPT-4o) and `eval_results_gemini35flashlite.json`. `caura-500-turns` and

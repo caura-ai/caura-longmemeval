@@ -7,7 +7,7 @@
     "started_at": "2026-09-14T13:19:17.476839+00:00",
     "finished_at": "2026-09-14T13:47:35.676571+00:00",
     "duration_seconds": 1698.199732,
-    "top_k": 20,
+    "top_k": 50,
     "skip_ingest": true,
     "reader": "GeminiLLM:gemini-3.8-flash",
     "judge": "gpt-4o",
@@ -28,7 +28,9 @@
         "sibling_window": 0,
         "as_of_recall": false,
         "valid_at": false,
-        "context_ordering": "Chronological (oldest to newest)"
+        "context_ordering": "Chronological (oldest to newest)",
+        "strategy": "Hybrid (dense + full-text), server default profile",
+        "search_candidates": 150
       },
       "ingestion": {
         "provider": "caura",
@@ -36,11 +38,21 @@
         "chunk_chars": 1200,
         "chunk_mode": "turns",
         "agent_prefix": "lmet"
+      },
+      "selection": {
+        "category": null,
+        "limit": null,
+        "limit_per_category": null,
+        "question_id": null,
+        "total_questions": 500,
+        "seed": null,
+        "excluded_count": 0
       }
     },
     "pipeline": "agentic-v1",
     "judge_secondary": "gemini-3.5-flash-lite",
-    "judge_protocol": "gpt-4o primary (LongMemEval reference judge, headline number); gemini-3.5-flash-lite secondary (strict development judge); both always reported"
+    "judge_protocol": "gpt-4o primary (LongMemEval reference judge, headline number); gemini-3.5-flash-lite secondary (strict development judge); both always reported",
+    "source_run": "caura-500-turns"
   },
   "summary": {
     "overall_accuracy": 0.908,
@@ -84,7 +96,7 @@
     "retrieval": {
       "avg": 9415.513593600483,
       "p50": 7773.258799978066,
-      "p95": 17654.9054000061,
+      "p95": 17891.700399981346,
       "min": 4143.3095000102185,
       "max": 57368.851999985054,
       "avg_context_chars": 157210.524,
@@ -93,7 +105,7 @@
     "generation": {
       "avg": 16804.665332599077,
       "p50": 13681.281800032593,
-      "p95": 33808.06810001377,
+      "p95": 33877.213199972175,
       "min": 4332.244999997783,
       "max": 414915.4013999505
     }

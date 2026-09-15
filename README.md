@@ -1,25 +1,25 @@
-# Caura on LongMemEval: 91.6%
+# Caura on LongMemEval: 92.2%
 
-**[Caura](https://caura.ai)'s memory API answers 458 of 500 LongMemEval_S questions correctly**, scored with the benchmark's reference judge (GPT-4o, official prompts, unmodified), with Gemini 3.8 Flash as the answering model and one configuration for all six question types.
+**[Caura](https://caura.ai)'s memory API answers 461 of 500 LongMemEval_S questions correctly**, scored with the benchmark's reference judge (GPT-4o, official prompts, unmodified), with Gemini 3.8 Flash as the answering model, one configuration for all six question types, and 22k tokens of context per question.
 
 | | GPT-4o judge | Gemini 3.5 Flash-Lite judge (stricter) |
 |---|---|---|
-| **Overall** | **91.6%** (458/500) | 89.8% (449/500) |
-| single-session user | 94.3% | 94.3% |
-| single-session assistant | 100.0% | 98.2% |
-| multi-session | 85.7% | 80.5% |
-| temporal reasoning | 90.2% | 91.0% |
-| knowledge update | 97.4% | 92.3% |
-| preference | 86.7% | 93.3% |
+| **Overall** | **92.2%** (461/500) | 90.2% (451/500) |
+| single-session user | 94.3% | 92.9% |
+| single-session assistant | 98.2% | 96.4% |
+| multi-session | 89.5% | 85.0% |
+| temporal reasoning | 91.0% | 89.5% |
+| knowledge update | 97.4% | 93.6% |
+| preference | 80.0% | 90.0% |
 
 Every published LongMemEval number is a joint property of the memory system, the answering model and the judge, so here is how this one was made:
 
 - **No fact extraction, no rewriting.** Caura stores the conversation turns as written and retrieves them with its default hybrid (dense + full-text) search. The answering model sees stored conversation, not LLM-generated summaries.
 - **No labels, no shortcuts.** Session ids and question types from the dataset never reach the store or the reader. All 500 questions, abstention items included. No cherry-picked subsets.
-- **A Flash-class answering model.** Most published numbers above 90 use Pro- or Opus-class answerers. Ours is Gemini 3.8 Flash; with the same pipeline handed perfect retrieval (oracle), the ceiling is 94.6%, so retrieval costs about three points and the rest is the reader.
+- **A Flash-class answering model.** Most published numbers above 90 use Pro- or Opus-class answerers. Ours is Gemini 3.8 Flash; with the same pipeline handed perfect retrieval (oracle), the ceiling is 94.6%, so retrieval costs about two points and the rest is the reader.
 - **Two judges, always both.** GPT-4o is the headline because it is the benchmark's reference judge; Gemini 3.5 Flash-Lite, which fails hedged answers, is reported beside it on every run. Judge snapshots are recorded in every verdict file.
-- **Measured, not estimated.** Median context handed to the reader: 48.6k tokens (Gemini tokenizer, 32% of the haystack); total reader tokens per question across all four pipeline stages: 52.7k median. A second identical run scored 92.0% / 89.2%.
-- **Half the tokens, same answers.** A third of that context is per-chunk bookkeeping (headers, timestamps, repeated reply anchors), not conversation. Re-laying out the identical retrieved text with one header per session (`--context-format compact`) cuts the reader to 26.5k total tokens per question (22.4k context) and scores 92.2% / 90.2% on the same retrieval. Nothing summarised or removed; see `REPRODUCE.md`.
+- **Measured, not estimated.** Median context handed to the reader: 22.4k tokens (Gemini tokenizer, 15% of the haystack); total reader tokens per question across all four pipeline stages: 26.5k median, 50.9k p95. Retrieval 7.6 s median, generation 9.9 s.
+- **Whole sessions, laid out once.** The reader sees complete conversation sessions, not extracted facts. As stored, a third of the context was per-chunk bookkeeping (headers, timestamps, repeated reply anchors); the compact layout (`--context-format compact`) keeps the identical text with one header per session, at half the tokens, with nothing summarised or removed. See `REPRODUCE.md`.
 
 **Everything behind the number is in this repository.** The saved reader context for every question, every judge's per-question verdicts, `results.json` with the effective configuration, the HTML reports, and the scripts that produce the coverage and token tables are committed under `outputs/`. Exact commands, environment and Caura server version: [`REPRODUCE.md`](REPRODUCE.md).
 
@@ -27,13 +27,14 @@ Every published LongMemEval number is a joint property of the memory system, the
 
 LongMemEval ([Wu et al., ICLR 2025](https://arxiv.org/abs/2410.10813)) gives each of 500 questions a haystack of ~50 chat sessions (~115k tokens) and asks something the user said months earlier. Question types: single-session user, single-session assistant, multi-session, temporal reasoning, knowledge update, preference, plus 30 unanswerable items where the right answer is to say so.
 
-The configuration behind 91.6% is **store the turn, read the session**:
+The configuration behind 92.2% is **store the turn, read the session**:
 
 1. **Ingest at turn granularity.** Each user turn plus the assistant reply that follows becomes its own Caura memory (~800 characters median), written through the standard bulk endpoint with the session date in a header. Small units embed cleanly: the sentence that carries the answer ranks on its own instead of being averaged into a 4,000-character chunk about three other topics.
 2. **Read at session granularity.** One hybrid search with the raw question, then pull the rest of each hit's session from the store, in chronological order, under a fixed 150k-character budget. The turn finds the right session; the whole session supplies the number or date the question needs.
-3. **A four-stage reader** on Gemini 3.8 Flash: extract evidence, draft, infer or fall back, verify against the evidence.
+3. **Lay the context out once per session** (`--context-format compact`): same text, one header per session, no per-chunk bookkeeping.
+4. **A four-stage reader** on Gemini 3.8 Flash: extract evidence, draft, infer or fall back, verify against the evidence.
 
-Gold-turn coverage, the share of answer-carrying turns that reach the reader, is 0.974 with this configuration. Of the 42 remaining errors under GPT-4o, 17 are retrieval misses and 22 are the reader getting it wrong with the evidence in front of it; `scripts/coverage.py` reproduces that split from the committed outputs.
+Gold-turn coverage, the share of answer-carrying turns that reach the reader, is 0.974 with this configuration. Of the 39 errors under GPT-4o, 16 are retrieval misses, 21 are the reader getting it wrong with the evidence in front of it, and 2 are unanswerable questions answered anyway; `scripts/coverage.py` reproduces that split from the committed outputs.
 
 This repository is the harness that produced the number: dataset download, ingestion into Caura at either granularity, retrieval with session expansion, the reader pipeline, both judges with the official prompts, oracle / full-context / BM25 baselines, HTML reports, and the coverage and token-accounting scripts.
 
