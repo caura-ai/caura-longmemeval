@@ -84,6 +84,16 @@ def _env(name: str, default: str | None = None) -> str | None:
     return os.environ.get(f"CAURA_{name}", default)
 
 
+def _is_injected(item: dict) -> bool:
+    """True for successor rows the server appended to a /search result (``injected: true``)."""
+    if item.get("injected"):
+        return True
+    for key in ("metadata", "system_metadata"):
+        if (item.get(key) or {}).get("injected"):
+            return True
+    return False
+
+
 def _sanitize_agent_id(raw: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(raw)).strip("-") or "unit"
     if len(slug) > 180:
@@ -262,6 +272,40 @@ class CauraMemoryProvider(BaseMemoryProvider):
             self.raw_turns_only = _env("TURN_RAW_ONLY", "1").lower() in ("1", "true", "yes")
         else:
             self.raw_turns_only = _env("RAW_ONLY", "0").lower() in ("1", "true", "yes")
+        # Server 3.20+ honours ``include_derived: false`` on /search, so derived
+        # memories are excluded *before* the top_k trim instead of taking
+        # candidate slots we then throw away. Sent whenever raw_turns_only is on;
+        # CAURA_SEARCH_INCLUDE_DERIVED=1 forces the old behaviour (client-side drop
+        # only). A 422 from an older server removes the key and is recorded.
+        self.search_include_derived = (
+            not self.raw_turns_only
+            if _env("SEARCH_INCLUDE_DERIVED") is None
+            else _env("SEARCH_INCLUDE_DERIVED", "0").lower() in ("1", "true", "yes")
+        )
+        self._include_derived_supported: bool | None = None
+        # Successor injection: when a hit is outdated/conflicted the server can
+        # append its successor with ``injected: true`` (up to 2x top_k rows). Such
+        # rows did not rank on their own; drop them so the candidate list is the
+        # ranked list. CAURA_DROP_INJECTED=0 keeps them.
+        self.drop_injected = _env("DROP_INJECTED", "1").lower() in ("1", "true", "yes")
+        # The server applies a cosine floor (profile default 0.3) before the top_k
+        # trim; on raw turns that can cut a 150-candidate request to 20 rows. The
+        # harness decides by budget, so ask for the unfloored ranked list. An
+        # explicit per-request ``min_similarity`` overrides the profile.
+        # CAURA_SEARCH_MIN_SIMILARITY=none omits the field.
+        ms_env = _env("SEARCH_MIN_SIMILARITY", "0")
+        self.search_min_similarity: float | None = None if str(ms_env).lower() in ("none", "") else float(ms_env)
+        self._min_similarity_supported: bool | None = None
+        # The server's query router sends recency-shaped questions ("what did I
+        # ... recently?") down a RECENT_CONTEXT path that returns 5 rows however
+        # large top_k is. When /search returns fewer candidates than requested,
+        # re-query with the question's content words (routed as keyword search)
+        # and append the new rows after the primary ones. Recorded per question.
+        self.router_fallback = _env("ROUTER_FALLBACK", "1").lower() in ("1", "true", "yes")
+        # CAURA_SEARCH_DIAGNOSTIC=1 asks for the server's routing diagnostic on
+        # every call (bigger responses); off by default, on for fallback calls.
+        self.search_diagnostic = _env("SEARCH_DIAGNOSTIC", "0").lower() in ("1", "true", "yes")
+        self._last_search = threading.local()
         self._retrieval_stats = threading.local()  # per worker thread; the runner is concurrent
         self._listing_supported: bool | None = None
 
@@ -554,10 +598,15 @@ class CauraMemoryProvider(BaseMemoryProvider):
         return False
 
     def _search_once(
-        self, query: str, agent_id: str, top_k: int | None = None, valid_at: str | None = None
+        self,
+        query: str,
+        agent_id: str,
+        top_k: int | None = None,
+        valid_at: str | None = None,
+        diagnostic: bool | None = None,
     ) -> list[dict]:
         limit = min(top_k or self.top_k, MAX_SEARCH_TOP_K)
-        body = {
+        body: dict = {
             "tenant_id": self.tenant_id,
             "query": query[:MAX_QUERY_LENGTH],
             "top_k": limit,
@@ -565,20 +614,58 @@ class CauraMemoryProvider(BaseMemoryProvider):
         }
         if valid_at:
             body["valid_at"] = valid_at
+        if not self.search_include_derived and self._include_derived_supported is not False:
+            body["include_derived"] = False
+        if self.search_min_similarity is not None and self._min_similarity_supported is not False:
+            body["min_similarity"] = self.search_min_similarity
+        want_diag = self.search_diagnostic if diagnostic is None else diagnostic
+        if want_diag:
+            body["diagnostic"] = True
+        self._last_search.value = {"requested": limit, "returned": 0, "strategy": None}
         resp = self._request("POST", "/search", json=body)
-        if resp.status_code == 422:
-            retry_needed = False
-            if limit > 20:
-                body["top_k"] = 20
-                retry_needed = True
-            if "valid_at" in body:
-                del body["valid_at"]
-                retry_needed = True
-            if retry_needed:
-                resp = self._request("POST", "/search", json=body)
+        # Staged 422 fallback for older servers: drop the newest request fields
+        # first, then valid_at, and only then shrink top_k. Each step is retried
+        # once so a rejected field never silently changes the candidate pool.
+        if resp.status_code == 422 and "diagnostic" in body:
+            del body["diagnostic"]
+            resp = self._request("POST", "/search", json=body)
+        if resp.status_code == 422 and "min_similarity" in body:
+            del body["min_similarity"]
+            self._min_similarity_supported = False
+            resp = self._request("POST", "/search", json=body)
+        elif resp.status_code == 200 and "min_similarity" in body:
+            self._min_similarity_supported = True
+        if resp.status_code == 422 and "include_derived" in body:
+            del body["include_derived"]
+            self._include_derived_supported = False
+            resp = self._request("POST", "/search", json=body)
+        elif resp.status_code == 200 and "include_derived" in body:
+            self._include_derived_supported = True
+        if resp.status_code == 422 and "valid_at" in body:
+            del body["valid_at"]
+            resp = self._request("POST", "/search", json=body)
+        if resp.status_code == 422 and limit > 20:
+            body["top_k"] = 20
+            resp = self._request("POST", "/search", json=body)
         if resp.status_code != 200:
             return []
-        return resp.json().get("items") or []
+        payload = resp.json()
+        items = payload.get("items") or []
+        diag = payload.get("diagnostic") or {}
+        self._last_search.value = {
+            "requested": limit,
+            "returned": len(items),
+            "strategy": diag.get("retrieval_strategy"),
+            "candidates_considered": diag.get("candidates_considered"),
+            "excluded_below_min_similarity": diag.get("excluded_below_min_similarity"),
+        }
+        return items
+
+    @staticmethod
+    def _content_word_query(query: str) -> str:
+        """The question's content words (stop words removed), the keyword-search variant."""
+        words = [w for w in re.findall(r"[A-Za-z0-9'\-]+", query) if w.lower() not in _QUERY_STOPWORDS and len(w) > 2]
+        return " ".join(words[:30])
 
     # ------------------------------------------------------------------ siblings
 
@@ -597,6 +684,11 @@ class CauraMemoryProvider(BaseMemoryProvider):
         prefix = f"{unit_id}_"
         cursor: str | None = None
         offset = 0
+        # Store integrity tally, reported through pop_retrieval_stats: how many
+        # rows the server holds for this unit that are not our turns (derived),
+        # how many of our turns default search no longer returns (status other
+        # than active) and how many never got an embedding (fast-write path).
+        tally = {"store_raw_rows": 0, "store_derived_rows": 0, "store_nonactive_raw": 0, "store_unembedded_raw": 0}
         for _ in range(max_pages):
             params: dict = {
                 "tenant_id": self.tenant_id,
@@ -621,6 +713,13 @@ class CauraMemoryProvider(BaseMemoryProvider):
                 # The store also holds server-derived memories (no doc_id); skip them here.
                 if mid and mid not in seen and str(meta.get("doc_id", "")).startswith(prefix):
                     seen[mid] = it
+                    tally["store_raw_rows"] += 1
+                    if (it.get("status") or "active") != "active":
+                        tally["store_nonactive_raw"] += 1
+                    if it.get("has_embedding") is False:
+                        tally["store_unembedded_raw"] += 1
+                elif mid and not meta.get("doc_id"):
+                    tally["store_derived_rows"] += 1
             if len(items) < page_size:
                 break
             next_cursor = body.get("next_cursor")
@@ -632,6 +731,10 @@ class CauraMemoryProvider(BaseMemoryProvider):
                 offset += page_size
         if self._listing_supported is None:
             self._listing_supported = bool(seen)
+        if seen:
+            stats = getattr(self._retrieval_stats, "value", None)
+            if isinstance(stats, dict):
+                stats.update(tally)
         return list(seen.values())
 
     def _siblings_by_search(self, agent_id: str, doc_id: str, valid_at: str | None) -> list[dict]:
@@ -701,7 +804,7 @@ class CauraMemoryProvider(BaseMemoryProvider):
             if doc_id and seeds_per_doc.get(doc_id, 0) >= MAX_SEEDS_PER_SESSION:
                 continue
             if not add(hit):
-                break
+                continue  # this hit does not fit the remaining budget; a smaller one further down may
             seeds += 1
             if not doc_id:
                 continue  # server-derived memory without a session; nothing to expand
@@ -753,16 +856,12 @@ class CauraMemoryProvider(BaseMemoryProvider):
             target_multiquery = profile.get("multiquery", target_multiquery)
 
         queries = [query]
-        if target_multiquery > 1:
-            content_words = [
-                w for w in re.findall(r"[A-Za-z0-9'\-]+", query)
-                if w.lower() not in _QUERY_STOPWORDS and len(w) > 2
-            ]
-            if content_words:
-                queries.append(" ".join(content_words[:30]))
+        content_query = self._content_word_query(query)
+        if target_multiquery > 1 and content_query:
+            queries.append(content_query)
         if target_multiquery > 2:
             all_words = [w for w in re.findall(r"[A-Za-z0-9'\-]+", query) if len(w) > 2]
-            if all_words and all_words != content_words:
+            if all_words and " ".join(all_words[:30]) != content_query:
                 queries.append(" ".join(all_words[:30]))
 
         # LongMemEval's question_date is "2023/05/20 (Sat) 02:21"-shaped; the
@@ -776,8 +875,29 @@ class CauraMemoryProvider(BaseMemoryProvider):
         # spent, so ask the server for a deeper candidate list.
         search_top_k = max(target_top_k, SIBLING_CANDIDATE_TOP_K) if self.sibling_expansion else target_top_k
 
+        fallback_stats: dict = {}
         if len(queries) == 1:
             raw_items = self._search_once(queries[0], agent_id, top_k=search_top_k, valid_at=valid_at)
+            primary = dict(getattr(self._last_search, "value", None) or {})
+            fallback_stats = {
+                "primary_returned": len(raw_items),
+                **({"primary_strategy": primary["strategy"]} if primary.get("strategy") else {}),
+            }
+            # Router shortfall: the server returned fewer rows than asked for a
+            # store far larger than the request. Re-query with the content words
+            # (keyword route) and append what the primary call did not return.
+            if self.router_fallback and len(raw_items) < search_top_k and content_query and content_query != query:
+                extra = self._search_once(content_query, agent_id, top_k=search_top_k, valid_at=valid_at, diagnostic=True)
+                fb = getattr(self._last_search, "value", None) or {}
+                seen_ids = {str(it.get("id")) for it in raw_items}
+                added = [it for it in extra if str(it.get("id")) not in seen_ids]
+                raw_items = raw_items + added
+                fallback_stats.update({
+                    "router_fallback_used": True,
+                    "fallback_returned": len(extra),
+                    "fallback_added": len(added),
+                    **({"fallback_strategy": fb["strategy"]} if fb.get("strategy") else {}),
+                })
         else:
             fused: dict[str, float] = {}
             best: dict[str, dict] = {}
@@ -792,12 +912,22 @@ class CauraMemoryProvider(BaseMemoryProvider):
 
         n_candidates = len(raw_items)
         n_derived = sum(1 for it in raw_items if not (it.get("metadata") or {}).get("doc_id"))
+        n_injected = sum(1 for it in raw_items if _is_injected(it))
         if self.raw_turns_only:
             raw_items = [it for it in raw_items if (it.get("metadata") or {}).get("doc_id")]
+        if self.drop_injected and n_injected:
+            raw_items = [it for it in raw_items if not _is_injected(it)]
         self._retrieval_stats.value = {
             "search_candidates": n_candidates,
             "server_derived_candidates": n_derived,
             "server_derived_dropped": n_derived if self.raw_turns_only else 0,
+            "server_derived_excluded_by_server": bool(
+                not self.search_include_derived and self._include_derived_supported
+            ),
+            "injected_candidates": n_injected,
+            "injected_dropped": n_injected if self.drop_injected else 0,
+            **({"min_similarity_sent": self.search_min_similarity} if self.search_min_similarity is not None else {}),
+            **fallback_stats,
         }
 
         effective_limit = max(target_top_k, target_merge_top_k) if target_multiquery > 1 else target_top_k
@@ -833,9 +963,29 @@ class CauraMemoryProvider(BaseMemoryProvider):
                 return {"base_url": self.base_url, "status_code": resp.status_code}
             body = resp.json()
             search = {}
+            tenant_settings: dict = {}
             settings = self._request("GET", "/settings", retries=1)
             if settings.status_code == 200:
-                search = (settings.json().get("search") or {}).get("default_profile") or {}
+                cfg = settings.json() or {}
+                search_cfg = cfg.get("search") or {}
+                search = search_cfg.get("default_profile") or {}
+                # The tenant-level knobs that change what /search returns for the
+                # same store. ``null`` means the server default applies (recorded
+                # as-is so a later reader can look the default up per version).
+                tenant_settings = {
+                    "search.include_derived": search_cfg.get("include_derived"),
+                    "search.recall_boost": search_cfg.get("recall_boost"),
+                    "search.entity_retrieval": search_cfg.get("entity_retrieval"),
+                    "search.graph_retrieval": search_cfg.get("graph_retrieval"),
+                    "enrichment.enabled": (cfg.get("enrichment") or {}).get("enabled"),
+                    "enrichment.atomic_fact_fanout_enabled": (cfg.get("enrichment") or {}).get(
+                        "atomic_fact_fanout_enabled"
+                    ),
+                    "dedup.semantic_dedup_enabled": (cfg.get("dedup") or {}).get("semantic_dedup_enabled"),
+                    "dedup.merge_near_duplicates": (cfg.get("dedup") or {}).get("merge_near_duplicates"),
+                    "write.default_write_mode": (cfg.get("write") or {}).get("default_write_mode"),
+                    "chunking.auto_chunk_enabled": (cfg.get("chunking") or {}).get("auto_chunk_enabled"),
+                }
             return {
                 "base_url": self.base_url,
                 "version": body.get("version"),
@@ -843,6 +993,16 @@ class CauraMemoryProvider(BaseMemoryProvider):
                 "server_llm": body.get("llm"),
                 "embedding": body.get("embedding"),
                 "search_default_profile": search,
+                "tenant_settings": tenant_settings,
+                "search_request": {
+                    "include_derived": None if self.search_include_derived else False,
+                    "include_derived_accepted": self._include_derived_supported,
+                    "min_similarity": self.search_min_similarity,
+                    "min_similarity_accepted": self._min_similarity_supported,
+                    "valid_at": self.send_valid_at,
+                    "drop_injected": self.drop_injected,
+                    "router_fallback": self.router_fallback,
+                },
             }
         except Exception as exc:  # metadata only; never fail a run over it
             return {"base_url": self.base_url, "error": str(exc)[:200]}

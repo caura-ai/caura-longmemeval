@@ -26,5 +26,8 @@ outputs/*
 !outputs/caura-500-opaque-run2/
 !outputs/caura-500-opaque-compact/
 !outputs/oracle-500-agentic-v1/
+!outputs/caura-500-compact-0928/
+!outputs/caura-500-compact-0928-fixed/
+!outputs/caura-500-compact-0928-b200k/
 outputs/*/*.bak
 outputs/*/*.log

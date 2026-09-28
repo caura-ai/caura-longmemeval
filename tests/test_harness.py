@@ -257,15 +257,156 @@ def test_raw_turns_only_drops_server_derived_search_hits(monkeypatch):
 
     facts = provider.retrieve("q1", "what pet do I have?")
     assert [f.id for f in facts] == ["m1"]
-    assert provider.pop_retrieval_stats() == {
+    stats = provider.pop_retrieval_stats()
+    assert {k: stats[k] for k in ("search_candidates", "server_derived_candidates", "server_derived_dropped")} == {
         "search_candidates": 3, "server_derived_candidates": 2, "server_derived_dropped": 2,
     }
+    assert stats["injected_candidates"] == 0
     assert provider.pop_retrieval_stats() == {}  # consumed
 
     provider.raw_turns_only = False
     facts = provider.retrieve("q1", "what pet do I have?")
     assert [f.id for f in facts] == ["d1", "m1", "d2"]
     assert provider.pop_retrieval_stats()["server_derived_dropped"] == 0
+
+
+def test_search_body_excludes_derived_server_side_and_falls_back_on_422(monkeypatch):
+    """raw_turns_only sends include_derived=false; a 422 drops the key once and remembers."""
+    from longmemeval.providers.caura import CauraMemoryProvider
+
+    provider = CauraMemoryProvider(
+        api_key="k", tenant_id="t", chunk_mode="turns", sibling_expansion=False, send_valid_at=False,
+    )
+    assert provider.search_include_derived is False
+
+    class Resp:
+        def __init__(self, status, items=None):
+            self.status_code = status
+            self._items = items or []
+
+        def json(self):
+            return {"items": self._items}
+
+    bodies: list[dict] = []
+
+    def fake_request(method, path, **kwargs):
+        bodies.append(dict(kwargs["json"]))
+        return Resp(200, [{"id": "m1", "metadata": {"doc_id": "q1_a"}}])
+
+    monkeypatch.setattr(provider, "_request", fake_request)
+    provider._search_once("q", "lme-q1", top_k=150)
+    assert bodies[-1]["include_derived"] is False and bodies[-1]["top_k"] == 150
+    assert provider._include_derived_supported is True
+
+    # Older server: 422 on the unknown field -> retried without it, top_k untouched.
+    provider._include_derived_supported = None
+    bodies.clear()
+
+    def old_server(method, path, **kwargs):
+        body = dict(kwargs["json"])
+        bodies.append(body)
+        return Resp(422) if "include_derived" in body else Resp(200, [])
+
+    monkeypatch.setattr(provider, "_request", old_server)
+    provider._search_once("q", "lme-q1", top_k=150)
+    # Staged: min_similarity dropped first, then include_derived; top_k never shrinks.
+    assert [("min_similarity" in b, "include_derived" in b, b["top_k"]) for b in bodies] == [
+        (True, True, 150), (False, True, 150), (False, False, 150),
+    ]
+    assert provider._include_derived_supported is False
+    bodies.clear()
+    provider._search_once("q", "lme-q1", top_k=150)
+    assert len(bodies) == 1 and "include_derived" not in bodies[0] and "min_similarity" not in bodies[0]  # not sent again
+
+
+def test_router_shortfall_triggers_content_word_fallback(monkeypatch):
+    """A /search that returns fewer rows than requested is topped up with a keyword re-query."""
+    from longmemeval.providers.caura import CauraMemoryProvider
+
+    provider = CauraMemoryProvider(
+        api_key="k", tenant_id="t", chunk_mode="turns", sibling_expansion=False, send_valid_at=False,
+    )
+    assert provider.router_fallback is True and provider.search_min_similarity == 0.0
+    calls: list[tuple[str, bool | None]] = []
+
+    def fake_search(query, agent_id, top_k=None, valid_at=None, diagnostic=None):
+        calls.append((query, diagnostic))
+        if query.startswith("What did I buy"):
+            provider._last_search.value = {"requested": top_k, "returned": 2, "strategy": "recent_context"}
+            return [{"id": "r1", "content": "a", "metadata": {"doc_id": "q1_a"}},
+                    {"id": "r2", "content": "b", "metadata": {"doc_id": "q1_b"}}]
+        provider._last_search.value = {"requested": top_k, "returned": 3, "strategy": "keyword_search"}
+        return [{"id": "r2", "content": "b", "metadata": {"doc_id": "q1_b"}},
+                {"id": "k1", "content": "c", "metadata": {"doc_id": "q1_c"}},
+                {"id": "k2", "content": "d", "metadata": {"doc_id": "q1_d"}}]
+
+    monkeypatch.setattr(provider, "_search_once", fake_search)
+    facts = provider.retrieve("q1", "What did I buy for my sister's birthday gift?", top_k=150)
+    assert [f.id for f in facts] == ["r1", "r2", "k1", "k2"]  # primary first, new rows appended
+    assert calls[1] == ("buy sister's birthday gift", True)
+    stats = provider.pop_retrieval_stats()
+    assert stats["primary_returned"] == 2 and stats["primary_strategy"] == "recent_context"
+    assert stats["router_fallback_used"] is True and stats["fallback_added"] == 2
+    assert stats["fallback_strategy"] == "keyword_search" and stats["min_similarity_sent"] == 0.0
+
+    # Full list returned -> no fallback call.
+    calls.clear()
+    monkeypatch.setattr(provider, "_search_once", lambda q, a, top_k=None, valid_at=None, diagnostic=None: (
+        calls.append((q, diagnostic)) or [{"id": f"m{i}", "content": "x", "metadata": {"doc_id": "q1_a"}} for i in range(top_k)]))
+    provider.retrieve("q1", "What did I buy for my sister's birthday gift?", top_k=10)
+    assert len(calls) == 1
+    assert "router_fallback_used" not in provider.pop_retrieval_stats()
+
+
+def test_search_body_sends_min_similarity_and_drops_it_on_422(monkeypatch):
+    from longmemeval.providers.caura import CauraMemoryProvider
+
+    provider = CauraMemoryProvider(api_key="k", tenant_id="t", chunk_mode="turns", send_valid_at=False)
+
+    class Resp:
+        def __init__(self, status, items=None, diag=None):
+            self.status_code = status
+            self._payload = {"items": items or [], "diagnostic": diag}
+
+        def json(self):
+            return self._payload
+
+    bodies: list[dict] = []
+
+    def server(method, path, **kwargs):
+        body = dict(kwargs["json"])
+        bodies.append(body)
+        if "min_similarity" in body:
+            return Resp(422)
+        return Resp(200, [{"id": "m"}], {"retrieval_strategy": "keyword_search", "candidates_considered": 300})
+
+    monkeypatch.setattr(provider, "_request", server)
+    provider._search_once("q", "lme-q1", top_k=150, diagnostic=True)
+    assert bodies[0]["min_similarity"] == 0.0 and bodies[0]["diagnostic"] is True
+    assert "min_similarity" not in bodies[-1] and bodies[-1]["top_k"] == 150
+    assert provider._min_similarity_supported is False
+    assert provider._last_search.value["strategy"] == "keyword_search"
+    assert provider._last_search.value["returned"] == 1
+
+
+def test_injected_successor_rows_are_dropped_and_counted(monkeypatch):
+    from longmemeval.providers.caura import CauraMemoryProvider
+
+    provider = CauraMemoryProvider(
+        api_key="k", tenant_id="t", chunk_mode="turns", sibling_expansion=False, send_valid_at=False,
+    )
+    assert provider.drop_injected is True
+    a = {"id": "m1", "content": "old", "metadata": {"doc_id": "q1_a", "chunk": 0}}
+    b = {"id": "m2", "content": "new", "metadata": {"doc_id": "q1_b", "chunk": 0}, "injected": True}
+    monkeypatch.setattr(provider, "_search_once", lambda *a_, **k: [a, b])
+
+    assert [f.id for f in provider.retrieve("q1", "?")] == ["m1"]
+    stats = provider.pop_retrieval_stats()
+    assert stats["injected_candidates"] == 1 and stats["injected_dropped"] == 1
+
+    provider.drop_injected = False
+    assert [f.id for f in provider.retrieve("q1", "?")] == ["m1", "m2"]
+    assert provider.pop_retrieval_stats()["injected_dropped"] == 0
 
 
 def test_judge_protocol_defaults_and_overrides(monkeypatch):

@@ -74,10 +74,62 @@ Effective retrieval configuration (turn-mode defaults, all recorded in `results.
 | memory header | `[date: <ISO> \| context: Session <opaque 12-hex label> - happened on <date> UTC. \| turn i/n]` |
 | search | one `/search` call with the raw question, `top_k` 150 candidates (server default hybrid profile), no `valid_at` |
 | server-derived memories | dropped from the candidate list (`--raw-turns-only`, default in turn mode); count recorded per question in `hypotheses.jsonl -> retrieval_stats` |
+| candidate-list guards (added 28 Sep, see below) | `include_derived: false` and `min_similarity: 0` sent on every `/search`; `injected: true` successor rows dropped; a content-word re-query when the server returns fewer rows than requested |
 | expansion | walk candidates in rank order, at most 3 seeds per session, pull the whole session of each seed (`--sibling-window 0`) until the 150,000-character budget is spent |
 | context order | chronological (session date, then turn index) |
 | category logic | none (`category_adaptive` false); the question type is never read |
 | reader pipeline | `agentic-v1`: extract evidence from the full context, draft, conditional infer / direct fallback, verify. Exact per-call token usage recorded in `hypotheses.jsonl -> reader_usage` |
+
+## Server drift and the candidate-list guards
+
+The headline was measured against server 3.10.1. A re-run of the same command on
+28 September against 3.20.1 / plugin 2.23.3 (`outputs/caura-500-compact-0928`) gave
+452/500 with gold-turn coverage 844/886 instead of 863/886. `scripts/coverage_diff.py`
+localises such a change to the questions whose gold turns moved, and the per-question
+`retrieval_stats` explain why. Three server-side behaviours were shrinking the
+150-candidate list the harness asks for:
+
+- **atomic-fact fan-out** (default on since 09-09) had filled every store with ~200–340
+  derived rows; they took a median 41 of the 150 slots and were then dropped client-side;
+- a **query router** sends recency-shaped questions ("what did I … recently?") down a
+  `recent_context` path that returns 5 rows whatever `top_k` says (8 of the 500 questions);
+- a **cosine floor** of 0.3 in the search profile is applied before the trim; on raw turns
+  it cut 13 questions to 20–94 rows.
+
+The harness now counters all three on the request side and records what happened:
+`include_derived: false` (derived rows excluded before the trim), `min_similarity: 0`
+(the harness decides by budget, not by a floor), `injected: true` successor rows dropped,
+and a content-word re-query whose rows are appended when `/search` returns fewer rows than
+requested. Each is a `CAURA_*` env knob (`SEARCH_INCLUDE_DERIVED`, `SEARCH_MIN_SIMILARITY`,
+`DROP_INJECTED`, `ROUTER_FALLBACK`) and each is written to `results.json ->
+run.parameters.retrieval` and `run.server.search_request`; a 422 from an older server drops
+the field and records that. `results.json -> run.server.tenant_settings` snapshots the tenant
+knobs that change `/search` for the same store (`search.include_derived`,
+`enrichment.atomic_fact_fanout_enabled`, …), and every question's `retrieval_stats` now
+carries the store integrity seen through the listing (`store_raw_rows`,
+`store_derived_rows`, `store_nonactive_raw`, `store_unembedded_raw`) plus
+`primary_returned`, `router_fallback_used` and the server's `retrieval_strategy` when a
+fallback fired.
+
+What the guards cannot undo is the ranking itself. With them on
+(`outputs/caura-500-compact-0928-fixed`) coverage moved only 844 → 847 and accuracy
+452 → 453: the missing gold turns were all still `active` and embedded, their sessions
+were in the 150 candidates (often in the top 10), but the new order put more non-gold
+sessions ahead of them and, at ~27,000 stored characters per whole session, the
+150,000-character budget was spent after five or six sessions. Widening the budget to
+200,000 characters (`--context-budget 200000`, `outputs/caura-500-compact-0928-b200k`)
+restores exactly the headline coverage (863/886 gold turns, 460 fully covered questions)
+at 29.8k context tokens median (vs 22.3k) and gives 459/500 GPT-4o, 452/500 Flash-Lite;
+offline simulation of the walk on the same candidates gave 871/886 at 250,000 and confirmed
+that windowed expansion (whole session for the first seeds, ±2 turns after) is worse at
+every budget. Retrieval is therefore reproducible for a given server build, not across
+builds; `results.json -> run.server.version` is the number to match, and against 3.20+
+the 200k budget is the recommended setting.
+
+```bash
+# where did coverage move between two runs, and what do the retrieval_stats say about it
+uv run python scripts/coverage_diff.py outputs/caura-500-opaque-compact outputs/<later-run> --list
+```
 
 ## Context layout (`--context-format`)
 
@@ -139,6 +191,9 @@ uv run python scripts/context_tokens.py outputs/caura-500-opaque-compact
 | `caura-500-opaque-run2` | 14 Sep 2026 | same `lmeo` store, fresh retrieval + generation | variance run, full layout (identical configuration; same gold-turn coverage, 863/886) | 92.0 | 89.2 |
 | `oracle-500-agentic-v1` | 14 Sep 2026 | no store: reader gets exactly the answer sessions | reader ceiling under perfect retrieval (`--provider oracle`) | 94.6 | 92.8 |
 | `caura-500-opaque-compact` | 15 Sep 2026 | saved `caura-500-opaque` contexts, re-laid-out with `--context-format compact` | **headline**: same retrieved text, half the reader tokens (26.5k vs 52.7k median total; 22.4k vs 48.6k context) | **92.2** | 90.2 |
+| `caura-500-compact-0928` | 28 Sep 2026 | same `lmeo` store, server 3.20.1 / plugin 2.23.3 | the headline command re-run unchanged after the server upgrade; coverage 844/886 (see "Server drift") | 90.4 | 88.2 |
+| `caura-500-compact-0928-fixed` | 28 Sep 2026 | same store and server | headline command with the candidate-list guards (`include_derived: false`, `min_similarity: 0`, injected rows dropped, router fallback); coverage 847/886 | 90.6 | 88.2 |
+| `caura-500-compact-0928-b200k` | 28 Sep 2026 | same store and server | guards plus `--context-budget 200000`; coverage back to 863/886, 29.8k context tokens median | 91.8 | 90.4 |
 
 Scores are accuracy over all 500 questions from each run's `eval_results.json`
 (GPT-4o) and `eval_results_gemini35flashlite.json`. `caura-500-turns` and

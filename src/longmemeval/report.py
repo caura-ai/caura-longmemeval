@@ -229,6 +229,9 @@ def build_report_payload(
 
     abstention_count = 0
     abstention_correct = 0
+    # Per-question retrieval_stats from the provider (candidate counts, server-derived
+    # / injected rows, store integrity); aggregated below as medians and totals.
+    stat_series: dict[str, list[float]] = {}
 
     for res in results:
         qid = res.get("question_id", "")
@@ -239,6 +242,12 @@ def build_report_payload(
             abstention_count += 1
             if res.get("correct"):
                 abstention_correct += 1
+
+        for key, val in (hypo.get("retrieval_stats") or {}).items():
+            if isinstance(val, bool):
+                stat_series.setdefault(key, []).append(1.0 if val else 0.0)
+            elif isinstance(val, (int, float)):
+                stat_series.setdefault(key, []).append(float(val))
 
         ret_ms = float(hypo.get("retrieve_time_ms") or 0.0)
         gen_ms = float(hypo.get("generate_time_ms") or 0.0)
@@ -292,6 +301,17 @@ def build_report_payload(
     retrieval_stats = compute_quantiles(ret_latencies)
     retrieval_stats["avg_context_chars"] = (sum(context_lengths) / len(context_lengths)) if context_lengths else 0
     retrieval_stats["avg_chunks"] = (sum(chunk_counts) / len(chunk_counts)) if chunk_counts else 0
+    if stat_series:
+        store_stats: dict[str, Any] = {}
+        for key, vals in stat_series.items():
+            srt = sorted(vals)
+            store_stats[key] = {
+                "median": srt[len(srt) // 2],
+                "max": srt[-1],
+                "total": sum(srt),
+                "questions": len(srt),
+            }
+        retrieval_stats["per_question"] = store_stats
     if token_stats:
         ctx = token_stats.get("context_tokens") or {}
         tot = token_stats.get("reader_total_tokens") or {}
@@ -1514,6 +1534,18 @@ const topKDisplay = isAdaptive
     ? `${fmtNum(baseK)} (${fmtNum(retParams.search_candidates)} candidates walked under the budget)`
     : fmtNum(baseK);
 
+const pq = (summary.retrieval && summary.retrieval.per_question) || {};
+const derivedDisplay = (() => {
+  if (!retParams.raw_turns_only) return 'Allowed in context';
+  const seen = pq.server_derived_candidates;
+  const seenText = seen ? ` · ${fmtNum(seen.median)} median / ${fmtNum(seen.max)} max of the candidates returned` : '';
+  if (retParams.search_include_derived === false) {
+    const accepted = run.server && run.server.search_request && run.server.search_request.include_derived_accepted;
+    return `Excluded server-side (include_derived=false${accepted === false ? ', rejected by server, client-side drop only' : ''})${seenText}`;
+  }
+  return `Dropped client-side after the top-k trim (stored turns only)${seenText}`;
+})();
+
 // Populate chips
 document.querySelector('#run-chips').innerHTML = `
   <span class="chip">Run: <strong>${h(run.name || 'default')}</strong></span>
@@ -1541,6 +1573,9 @@ const paramGroups = [
     items: [
       ['Provider', h(run.provider || ingest.provider || 'caura')],
       ...(run.server && run.server.version ? [['Server', `${h(run.server.version)}${run.server.plugin_version ? ` · plugin ${h(run.server.plugin_version)}` : ''}`]] : []),
+      ...(run.server && run.server.tenant_settings ? [['Tenant Settings', Object.entries(run.server.tenant_settings)
+        .filter(([k]) => ['search.include_derived', 'enrichment.atomic_fact_fanout_enabled', 'enrichment.enabled', 'write.default_write_mode'].includes(k))
+        .map(([k, v]) => `${h(k)}=${v === null || v === undefined ? 'server default' : h(String(v))}`).join(' · ')]] : []),
       ['Isolation', ingest.isolation || 'One fleet sandbox per question'],
       ['Ingestion Mode', run.skip_ingest ? 'Pre-indexed / Skipped' : (ingest.mode || 'Bulk session ingest')],
       ['Chunking', ingest.chunk_mode === 'turns'
@@ -1555,7 +1590,13 @@ const paramGroups = [
       ['As-Of Recall', (retParams.as_of_recall !== false && retParams.valid_at !== false) ? 'Enabled (anchored at question_date)' : 'Disabled (wall-clock)'],
       ['Search Strategy', retParams.strategy || (isAdaptive ? 'Adaptive profile / semantic search' : 'Semantic search')],
       ...(retParams.sibling_expansion != null ? [['Session Expansion', retParams.sibling_expansion ? `Whole session of each hit${retParams.context_budget_chars ? `, ${fmtNum(retParams.context_budget_chars)}-char budget` : ''}` : 'Off']] : []),
-      ...(retParams.raw_turns_only != null ? [['Server-Derived Memories', retParams.raw_turns_only ? 'Dropped (stored turns only)' : 'Allowed in context']] : []),
+      ...(retParams.raw_turns_only != null ? [['Server-Derived Memories', derivedDisplay]] : []),
+      ...(retParams.search_min_similarity != null ? [['Similarity Floor', `min_similarity=${retParams.search_min_similarity} sent per request (overrides the profile floor)`]] : []),
+      ...(retParams.router_fallback != null ? [['Router Shortfall Fallback', retParams.router_fallback
+        ? `On: content-word re-query when /search returns fewer rows than requested${pq.router_fallback_used ? ` · used on ${fmtNum(pq.router_fallback_used.total)} of ${fmtNum(summary.total_questions || questions.length)} questions` : ' · never triggered'}`
+        : 'Off']] : []),
+      ...(pq.injected_candidates ? [['Injected Successor Rows', `${fmtNum(pq.injected_candidates.total)} across ${fmtNum(pq.injected_candidates.questions)} questions · ${retParams.drop_injected === false ? 'kept' : 'dropped'}`]] : []),
+      ...(pq.store_raw_rows ? [['Store Integrity (per question, median)', `${fmtNum(pq.store_raw_rows.median)} stored turns · ${fmtNum(pq.store_derived_rows ? pq.store_derived_rows.median : 0)} server-derived rows · ${fmtNum(pq.store_nonactive_raw ? pq.store_nonactive_raw.median : 0)} turns marked outdated/conflicted · ${fmtNum(pq.store_unembedded_raw ? pq.store_unembedded_raw.total : 0)} un-embedded turns in total`]] : []),
       ['Context Ordering', retParams.context_ordering || 'Chronological (oldest to newest)'],
       ...(retParams.context_format ? [['Context Layout', retParams.context_format === 'compact' ? 'compact (one header per session)' : 'full (as stored, one header per chunk)']] : []),
       ['Context Tokens / Question', summary.retrieval && summary.retrieval.context_tokens_median != null
