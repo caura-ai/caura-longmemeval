@@ -197,7 +197,7 @@ uv run longmemeval rerun-pipeline outputs/caura-run/hypotheses.jsonl \
 
 For a paired comparison, replay the same saved contexts with `--pipeline agentic-v1`
 and a separate run name. Both variants use the original evidence extraction,
-candidate generation, and official judge prompts. Record the pipeline name and
+evidence-based draft prompts, and official judge prompts. Record the pipeline name and
 the evaluated question set when reporting a score.
 
 ### Judge protocol
