@@ -182,6 +182,24 @@ For an ad-hoc single-judge comparison, name the judge and an output file; only t
 uv run longmemeval evaluate-hypotheses outputs/caura-run/hypotheses.jsonl --judge openai --judge-model gpt-5.6-terra -o outputs/caura-run/eval_results_gpt56terra.json --no-html
 ```
 
+### Answer-first reader experiment
+
+Use `--pipeline agentic-v1-answer-first` on `run` or `rerun-pipeline` to test
+two sentences of answer guidance in the final verifier and the raw-context
+fallback. The guidance asks for a direct answer within the question's scope,
+the latest relevant value for current-state questions, and a clear explanation
+when the evidence is insufficient.
+
+```bash
+uv run longmemeval rerun-pipeline outputs/caura-run/hypotheses.jsonl \
+    --pipeline agentic-v1-answer-first --name answer-first-replay
+```
+
+For a paired comparison, replay the same saved contexts with `--pipeline agentic-v1`
+and a separate run name. Both variants use the original evidence extraction,
+candidate generation, and official judge prompts. Record the pipeline name and
+the evaluated question set when reporting a score.
+
 ### Judge protocol
 
 Fixed on 13 September 2026 after re-judging two full-500 runs with four judges (Flash-Lite had been the only judge from 10 to 13 September):

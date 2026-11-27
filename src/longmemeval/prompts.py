@@ -3,11 +3,25 @@
 from __future__ import annotations
 
 
-def build_answer_prompt(query: str, context: str, question_date: str | None = None) -> str:
+ANSWER_FIRST_GUIDANCE = (
+    "Lead with the answer supported by the evidence, using the scope of the question and the latest relevant value "
+    "for current-state questions. If the requested fact cannot be determined, say what is missing and include extra "
+    "details or alternative answers only when they materially change the answer."
+)
+
+
+def build_answer_prompt(
+    query: str,
+    context: str,
+    question_date: str | None = None,
+    *,
+    answer_first: bool = False,
+) -> str:
     """Build grounded answer generation prompt matching official LongMemEval format."""
     formatted_date = question_date if question_date else "Not specified"
+    guidance = f"\n{ANSWER_FIRST_GUIDANCE}" if answer_first else ""
 
-    return f"""I will give you several history chats between you and a user. Please answer the question based on the relevant chat history.
+    return f"""I will give you several history chats between you and a user. Please answer the question based on the relevant chat history.{guidance}
 
 History Chats:
 
@@ -181,10 +195,13 @@ def build_verify_answer_prompt(
     evidence_context: str,
     candidates: tuple[str, ...],
     question_date: str | None = None,
+    *,
+    answer_first: bool = False,
 ) -> str:
     """Prompt for Stage 4 of agentic-v1: verify candidates and hold back if unsupported."""
     formatted_date = question_date if question_date else "Not specified"
     candidate_text = "\n".join(f"Candidate {idx}: {c}" for idx, c in enumerate(candidates, 1))
+    guidance = f"{ANSWER_FIRST_GUIDANCE}\n\n" if answer_first else ""
 
     return f"""Verify and, when necessary, correct the candidate answer to a conversational-memory question.
 You may use only the extracted facts below.
@@ -197,7 +214,7 @@ Check:
 5. Directness: Keep the answer clear, complete, and direct.
 6. Explicit recall requests only: if the question literally asks to recall a stored name or value ("remind me of the name of...", "what was the name of the..."), the final answer should be a single sentence stating that value in full (never drop an associated title, link/URL, or identifier); strip unrequested descriptions and never list multiple alternative values to hedge. Do NOT shorten answers to advice, recommendation, suggestion, yes/no, counting, or time-calculation questions - those must stay complete.
 
-Question: {query}
+{guidance}Question: {query}
 Current Date: {formatted_date}
 
 {evidence_context}

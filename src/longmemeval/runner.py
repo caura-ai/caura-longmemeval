@@ -25,10 +25,21 @@ console = Console()
 
 DEFAULT_PRIMARY_JUDGE = ("openai", "gpt-4o")
 DEFAULT_SECONDARY_JUDGE = ("gemini", "gemini-3.5-flash-lite")
+ANSWER_FIRST_PIPELINE = "agentic-v1-answer-first"
+AGENTIC_PIPELINES = ("agentic-v1", ANSWER_FIRST_PIPELINE)
 JUDGE_PROTOCOL = (
     "gpt-4o primary (LongMemEval reference judge, headline number); "
     "gemini-3.5-flash-lite secondary (strict development judge); both always reported"
 )
+
+
+def check_saved_pipeline(saved_pipeline: str | None, requested_pipeline: str) -> None:
+    """Prevent an answer-first run and its control from sharing a checkpoint."""
+    if requested_pipeline != saved_pipeline and ANSWER_FIRST_PIPELINE in (saved_pipeline, requested_pipeline):
+        raise ValueError(
+            f"Saved answers use {saved_pipeline!r}, but the run requested {requested_pipeline!r}. "
+            "Choose a new run name for this pipeline."
+        )
 
 
 class Evaluator:
@@ -135,7 +146,8 @@ def run_reader_pipeline(
     t0_gen = time.perf_counter()
     reader_llm.begin_usage()
 
-    if pipeline == "agentic-v1":
+    if pipeline in AGENTIC_PIPELINES:
+        answer_first = pipeline == ANSWER_FIRST_PIPELINE
         # Stage 1: Extract factual evidence and classify support status
         t0_stage = time.perf_counter()
         with reader_llm.usage_stage("extract"):
@@ -182,6 +194,7 @@ def run_reader_pipeline(
                 query=question,
                 context=context,
                 question_date=question_date,
+                answer_first=answer_first,
             )
             with reader_llm.usage_stage("direct_fallback"):
                 inference_answer = reader_llm.generate(direct_prompt)
@@ -190,12 +203,14 @@ def run_reader_pipeline(
         # Stage 4: Verify and, if unsupported, hold back
         candidates = (initial_answer,) + ((inference_answer,) if inference_answer else ())
         t0_stage = time.perf_counter()
+        verification_options = {"answer_first": True} if answer_first else {}
         with reader_llm.usage_stage("verify"):
             verified = reader_llm.verify_answer(
                 question=question,
                 evidence=evidence_bundle,
                 candidates=candidates,
                 question_date=question_date,
+                **verification_options,
             )
         verify_ms = (time.perf_counter() - t0_stage) * 1000
 
@@ -209,7 +224,7 @@ def run_reader_pipeline(
             verifier_reason = verified.reason
 
         pipeline_trace = {
-            "pipeline": "agentic-v1",
+            "pipeline": pipeline,
             "evidence_status": evidence_bundle.status,
             "support_status": evidence_bundle.status,
             "facts": list(evidence_bundle.facts),
@@ -314,10 +329,11 @@ class BenchmarkRunner:
                     if line.strip():
                         try:
                             entry = HypothesisEntry.model_validate(json.loads(line))
-                            hypotheses.append(entry)
-                            existing_qids.add(entry.question_id)
                         except Exception:
-                            pass
+                            continue
+                        check_saved_pipeline(entry.pipeline, pipeline)
+                        hypotheses.append(entry)
+                        existing_qids.add(entry.question_id)
             if existing_qids:
                 console.print(f"[yellow]Resuming run: found {len(existing_qids)} already completed questions in {hypotheses_path}[/yellow]")
 
@@ -479,7 +495,11 @@ class BenchmarkRunner:
                     "reader": getattr(self.reader_llm, "model_name", "unknown"),
                     "judge": primary_name,
                     "judge_secondary": secondary_name,
-                    "prompt": "agentic-v1 (extract -> answer -> infer -> verify)" if pipeline == "agentic-v1" else "Official answer prompt with chronological context",
+                    "prompt": (
+                        f"{pipeline} (extract -> answer -> infer -> verify)"
+                        if pipeline in AGENTIC_PIPELINES
+                        else "Official answer prompt with chronological context"
+                    ),
                 },
             },
         }
