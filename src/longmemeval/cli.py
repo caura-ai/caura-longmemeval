@@ -17,11 +17,13 @@ from .dataset import LongMemEvalDataset, QUESTION_TYPES, download_dataset
 from .llm import get_llm
 from .providers import get_memory_provider, PROVIDERS
 from .runner import (
+    AGENTIC_PIPELINES,
     DEFAULT_PRIMARY_JUDGE,
     DEFAULT_SECONDARY_JUDGE,
     JUDGE_PROTOCOL,
     BenchmarkRunner,
     Evaluator,
+    check_saved_pipeline,
     run_reader_pipeline,
 )
 from .report import secondary_eval_filename, summarize_secondary
@@ -29,6 +31,7 @@ from .models import HypothesisEntry
 
 app = typer.Typer(help="LongMemEval benchmark harness for Caura.ai")
 console = Console()
+PIPELINE_HELP = "Pipeline architecture: " + " | ".join(("direct", *AGENTIC_PIPELINES))
 
 
 def resolve_judges(
@@ -132,7 +135,7 @@ def run(
     raw_turns_only: Optional[bool] = typer.Option(None, "--raw-turns-only/--allow-derived", help="Drop server-derived memories (no metadata.doc_id) from /search results so the reader sees only stored source text (default on in turns mode)"),
     agent_prefix: Optional[str] = typer.Option(None, "--agent-prefix", help="Caura agent-id prefix; use a fresh prefix to ingest into a separate store without touching an existing one"),
     bulk_size: Optional[int] = typer.Option(None, "--bulk-size", help="Items per /memories/bulk call (max 100); raise for fine-grained chunking"),
-    pipeline: str = typer.Option("direct", "--pipeline", help="Pipeline architecture: direct | agentic-v1"),
+    pipeline: str = typer.Option("direct", "--pipeline", help=PIPELINE_HELP),
     context_format: str = typer.Option("full", "--context-format", help=CONTEXT_FORMAT_HELP),
     exclude_results: Optional[list[Path]] = typer.Option(None, "--exclude-results", help="Exclude question IDs from previous results.json / eval_results.json / hypotheses.jsonl"),
     seed: Optional[int] = typer.Option(None, "--seed", help="Random seed for sampling questions"),
@@ -285,7 +288,7 @@ def ingest(
 def rerun_pipeline(
     source_hypotheses: Path = typer.Argument(..., help="Path to existing hypotheses.jsonl file with saved context"),
     run_name: str = typer.Option(..., "--name", "-n", help="Name for the new run output directory"),
-    pipeline: str = typer.Option("agentic-v1", "--pipeline", help="Pipeline architecture: direct | agentic-v1"),
+    pipeline: str = typer.Option("agentic-v1", "--pipeline", help=PIPELINE_HELP),
     reader_llm: str = typer.Option("gemini", "--reader", help="LLM for answering: gemini | openai | grok"),
     reader_model: Optional[str] = typer.Option(None, "--reader-model", help="Model name for reader LLM"),
     judge_llm: Optional[str] = typer.Option(None, "--judge", help=JUDGE_HELP),
@@ -337,7 +340,9 @@ def rerun_pipeline(
         with open(hypo_path, "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    new_hypotheses.append(HypothesisEntry.model_validate(json.loads(line)))
+                    entry = HypothesisEntry.model_validate(json.loads(line))
+                    check_saved_pipeline(entry.pipeline, pipeline)
+                    new_hypotheses.append(entry)
     else:
         console.print(f"[bold cyan]Re-running {len(source_entries)} questions with pipeline='{pipeline}' (concurrency={concurrency})...[/bold cyan]")
         new_hypotheses = [None] * len(source_entries)  # type: ignore

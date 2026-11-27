@@ -10,7 +10,8 @@ import pytest
 from longmemeval.dataset import LongMemEvalDataset, extract_question_ids_from_file
 from longmemeval.llm import BaseLLM, _parse_json_object
 from longmemeval.models import LongMemEvalItem, EvidenceBundle, VerifiedAnswer
-from longmemeval.runner import run_reader_pipeline
+from longmemeval.prompts import ANSWER_FIRST_GUIDANCE
+from longmemeval.runner import ANSWER_FIRST_PIPELINE, check_saved_pipeline, run_reader_pipeline
 
 
 class DummyLLM(BaseLLM):
@@ -123,6 +124,44 @@ def test_run_reader_pipeline_agentic_flow():
     # Accounting is closed after the question; stray calls are not attributed to it.
     llm.generate("unrelated")
     assert llm.end_usage() is None
+
+
+@pytest.mark.parametrize("evidence_supported", [True, False])
+def test_answer_first_changes_only_final_wording_prompts(evidence_supported):
+    responses = {
+        "Select and extract factual evidence": json.dumps(
+            {"status": "inferable", "facts": ["The bike is red."]}
+            if evidence_supported
+            else {"status": "unsupported", "facts": []}
+        ),
+        "Verify and, when necessary, correct the candidate answer": json.dumps(
+            {"answer": "Red.", "reason": "Supported."}
+        ),
+    }
+    baseline, variant = (DummyLLM(responses) for _ in range(2))
+    run_reader_pipeline(baseline, "What color is the bike?", "The bike is red.", pipeline="agentic-v1")
+    _, _, trace, usage = run_reader_pipeline(
+        variant, "What color is the bike?", "The bike is red.", pipeline=ANSWER_FIRST_PIPELINE
+    )
+
+    assert trace["pipeline"] == ANSWER_FIRST_PIPELINE
+    assert len(baseline.call_history) == len(variant.call_history) == 4
+    assert all(ANSWER_FIRST_GUIDANCE not in prompt for prompt in baseline.call_history)
+    for old_prompt, new_prompt, call in zip(baseline.call_history, variant.call_history, usage["calls"]):
+        if call["stage"] in {"verify", "direct_fallback"}:
+            assert ANSWER_FIRST_GUIDANCE in new_prompt
+        else:
+            assert new_prompt == old_prompt
+
+
+@pytest.mark.parametrize(
+    ("saved", "requested"),
+    [("agentic-v1", ANSWER_FIRST_PIPELINE), (ANSWER_FIRST_PIPELINE, "agentic-v1")],
+)
+def test_answer_first_cannot_share_saved_answers_with_baseline(saved, requested):
+    check_saved_pipeline(saved, saved)
+    with pytest.raises(ValueError, match="Choose a new run name"):
+        check_saved_pipeline(saved, requested)
 
 
 def test_extract_question_ids_from_file(tmp_path: Path):

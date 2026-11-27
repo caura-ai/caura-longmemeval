@@ -284,10 +284,14 @@ class BaseLLM:
         evidence: EvidenceBundle,
         candidates: tuple[str, ...],
         question_date: str | None = None,
+        *,
+        answer_first: bool = False,
     ) -> VerifiedAnswer:
         """Stage 4: Verify candidate answer, repair counts/dates, or hold back if unsupported."""
         from .prompts import build_verify_answer_prompt
-        prompt = build_verify_answer_prompt(question, evidence.as_context(), candidates, question_date)
+        prompt = build_verify_answer_prompt(
+            question, evidence.as_context(), candidates, question_date, answer_first=answer_first
+        )
         raw = self.generate(prompt, max_tokens=1024, temperature=0.0).strip()
         parsed = _parse_json_object(raw)
         if parsed is None or not str(parsed.get("answer", "")).strip():
